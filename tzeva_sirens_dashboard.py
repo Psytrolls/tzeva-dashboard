@@ -864,6 +864,7 @@ def api_city_stats():
 
 if __name__ == "__main__":
     import os
+
     store.ensure_loaded()
     port = int(os.environ.get("PORT", 5000))
     print(f"Dashboard ready: http://127.0.0.1:{port}")
