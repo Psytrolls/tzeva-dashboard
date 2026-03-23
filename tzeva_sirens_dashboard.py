@@ -5,7 +5,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -21,7 +21,10 @@ DATA_FILE = CACHE_DIR / "all.json"
 META_FILE = CACHE_DIR / "meta.json"
 REFRESH_SECONDS = 600
 
-# По умолчанию считаем только threat=0, как у тебя в проверках.
+# Израильское время (в среднем UTC+2/+3). Для исторической точности 
+# используем статичный оффсет, чтобы часы не съезжали на зарубежных серверах.
+ISRAEL_TZ = timezone(timedelta(hours=2))
+
 DEFAULT_THREAT_TYPES = {0}
 
 CITY_ALIASES = {
@@ -79,6 +82,8 @@ HTML = r'''<!doctype html>
       box-shadow: var(--shadow);
       padding: 20px;
       backdrop-filter: blur(10px);
+      display: flex;
+      flex-direction: column;
     }
     h1, h2, h3 { margin: 0; }
     .title {
@@ -101,7 +106,6 @@ HTML = r'''<!doctype html>
     .span-8 { grid-column: span 8; }
     .span-6 { grid-column: span 6; }
     .span-4 { grid-column: span 4; }
-    .span-3 { grid-column: span 3; }
     .controls {
       display: grid;
       grid-template-columns: 1.3fr 1fr 1fr 1fr auto;
@@ -198,33 +202,32 @@ HTML = r'''<!doctype html>
       font-size: 12px;
       white-space: nowrap;
     }
-    .table-wrap {
-      overflow: auto;
-      max-height: 520px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,.07);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 760px;
-    }
-    th, td {
-      padding: 12px 14px;
-      border-bottom: 1px solid rgba(255,255,255,.06);
-      text-align: right;
-      font-size: 14px;
-    }
-    th {
-      position: sticky;
-      top: 0;
-      background: #162137;
-      z-index: 1;
-      color: #c8d6f7;
-    }
     .muted { color: var(--muted); }
     .small { font-size: 12px; }
-    .footer-note { color: var(--muted); margin-top: 10px; font-size: 12px; }
+    .footer-note { color: var(--muted); margin-top: auto; padding-top: 15px; font-size: 12px; }
+    
+    .pattern-box {
+      background: rgba(255,184,77,0.1);
+      border: 1px solid rgba(255,184,77,0.25);
+      border-radius: 16px;
+      padding: 16px;
+      margin-top: auto;
+    }
+    .pattern-title {
+      color: var(--warn);
+      font-weight: 700;
+      font-size: 14px;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pattern-body {
+      color: #ffd8a8;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
     @media (max-width: 1100px) {
       .hero, .controls, .stats { grid-template-columns: 1fr; }
       .span-8, .span-6, .span-4, .span-3 { grid-column: span 12; }
@@ -237,20 +240,19 @@ HTML = r'''<!doctype html>
       <div class="card">
         <div class="title">🚨 לוח בקרה - צבע אדום</div>
         <div class="sub">
-          מערכת ווב מלאה לניתוח התרעות היסטוריות. אפשר לבחור עיר או אזור, לצפות בסטטיסטיקה לפי יום, שבוע וחודש,
-          לזהות שיאים, לראות ימים בולטים ולעקוב אחרי הגרפים בצורה נוחה.
+          מערכת לניתוח התרעות היסטוריות וזיהוי דפוסים. אפשר לבחור עיר או אזור, לצפות בסטטיסטיקה מפורטת,
+          לנתח את התפלגות השעות ולזהות שעות מועדות על בסיס נתוני עבר.
         </div>
         <div style="margin-top:16px" class="sub small" id="datasetMeta">טוען נתונים...</div>
       </div>
       <div class="card">
-        <h3 style="margin-bottom:12px">מה אפשר לעשות כאן</h3>
+        <h3 style="margin-bottom:12px">מה חדש במערכת</h3>
         <div class="sub">
-          • חיפוש לפי עיר או אזור<br>
-          • שיאים לפי יום / שבוע / חודש<br>
-          • גרף לפי ימים<br>
-          • הערים המובילות<br>
-          • הימים עם הכי הרבה התרעות<br>
-          • סיכום מלא על כל בסיס הנתונים
+          • הוסרו טבלאות ארוכות לטובת ויזואליזציה<br>
+          • נוסף תצוגת אזעקות אחרונות בעיר<br>
+          • נוסף גרף התפלגות לפי שעות<br>
+          • ניתוח שעות "חמות" בשבוע האחרון<br>
+          • זיהוי פוטנציאל איום לפי דפוס היסטורי
         </div>
       </div>
     </div>
@@ -259,7 +261,7 @@ HTML = r'''<!doctype html>
       <div class="controls">
         <div>
           <label for="citySelect">עיר / אזור</label>
-          <input list="citiesList" id="citySelect" placeholder="התחל להקליד: אשדוד / אשקלון / באר שבע ...">
+          <input list="citiesList" id="citySelect" placeholder="התחל להקליד: אשדוד / אשקלון ...">
           <datalist id="citiesList"></datalist>
         </div>
         <div>
@@ -316,48 +318,59 @@ HTML = r'''<!doctype html>
 
       <div class="card span-8">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-          <h3>גרף לפי ימים</h3>
+          <h3>גרף התרעות לפי ימים</h3>
           <div class="muted small" id="chartCaption">—</div>
         </div>
         <canvas id="dailyChart" height="120"></canvas>
-        <div class="footer-note">הגרף מציג כמה אירועי התרעה נפרדים כללו את העיר או האזור שנבחרו.</div>
+        <div class="footer-note">מציג את כמות ההתרעות בטווח התאריכים הנבחר.</div>
       </div>
 
       <div class="card span-4">
-        <h3 style="margin-bottom:14px">שיאי העיר</h3>
-        <div class="list" id="recordsList"></div>
-      </div>
-            <div class="card span-6">
-        <h3 style="margin-bottom:14px">הערים המובילות בטווח שנבחר</h3>
-        <div class="list" id="topCitiesList"></div>
+        <h3 style="margin-bottom:14px">אזעקות אחרונות בעיר</h3>
+        <div class="list" id="latestAlertsList">
+            </div>
+        <div class="footer-note">מציג עד 10 אירועים אחרונים בטווח הנבחר.</div>
       </div>
 
-      <div class="card span-6">
-        <h3 style="margin-bottom:14px">הימים המובילים בכל הבסיס</h3>
-        <div class="list" id="topDaysList"></div>
+      <div class="card span-8">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3>התפלגות התרעות לפי שעות היממה (בטווח הנבחר)</h3>
+        </div>
+        <canvas id="hourlyChart" height="120"></canvas>
+      </div>
+
+      <div class="card span-4">
+        <h3 style="margin-bottom:14px">ניתוח שעות ודפוסים</h3>
+        
+        <div style="margin-bottom: 20px;">
+            <div class="muted small" style="margin-bottom: 10px;">השעות החמות ביותר (7 ימים מסוף הטווח):</div>
+            <div class="list" id="weekHoursList">
+                </div>
+        </div>
+
+        <div class="pattern-box">
+            <div class="pattern-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                פוטנציאל - דפוס היסטורי
+            </div>
+            <div class="pattern-body">
+                <strong>שימו לב: לא מדובר בתחזית מדעית או צבאית!</strong><br>
+                <span id="patternText">—</span>
+            </div>
+        </div>
       </div>
 
       <div class="card span-12">
-        <h3 style="margin-bottom:14px">טבלה יומית מפורטת</h3>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>תאריך</th>
-                <th>מספר אירועים</th>
-                <th>מצטבר</th>
-              </tr>
-            </thead>
-            <tbody id="daysTable"></tbody>
-          </table>
-        </div>
+        <h3 style="margin-bottom:14px">הערים המובילות בטווח שנבחר</h3>
+        <div class="list" style="flex-direction: row; flex-wrap: wrap;" id="topCitiesList"></div>
       </div>
     </div>
   </div>
 
 <script>
 let allCities = [];
-let dashboardChart = null;
+let dailyChartObj = null;
+let hourlyChartObj = null;
 let datasetMeta = null;
 
 function fmtNum(v) {
@@ -387,7 +400,7 @@ async function getJson(url, options = {}) {
 
 async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
-  const text = `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`;
+  const text = `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים: ${fmtNum(datasetMeta.total_cities)} · עדכון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`;
   setText('datasetMeta', text);
 
   if (datasetMeta.max_date) {
@@ -420,66 +433,26 @@ function applyPreset() {
   document.getElementById('fromDate').value = shiftDays(datasetMeta.max_date, -(days - 1));
 }
 
-function renderRecords(summary) {
-  const rows = [
-    { label: 'יום שיא', value: summary.best_day?.count ?? 0, meta: summary.best_day?.period ?? '—', badge: 'day' },
-    { label: 'שבוע שיא', value: summary.best_week?.count ?? 0, meta: summary.best_week?.period ?? '—', badge: 'week' },
-    { label: 'חודש שיא', value: summary.best_month?.count ?? 0, meta: summary.best_month?.period ?? '—', badge: 'month' },
-  ];
-
-  document.getElementById('recordsList').innerHTML = rows.map(r => `
-    <div class="list-item">
-      <div class="left">
-        <div class="name">${r.label}</div>
-        <div class="meta">${r.meta}</div>
-      </div>
-      <div class="badge">${r.badge}: ${fmtNum(r.value)}</div>
-    </div>
-  `).join('');
-}
-
 function renderTopCities(items) {
   const el = document.getElementById('topCitiesList');
-  el.innerHTML = items.slice(0, 20).map((r, idx) => `
-    <div class="list-item">
+  el.innerHTML = items.slice(0, 12).map((r, idx) => `
+    <div class="list-item" style="width: calc(25% - 10px);">
       <div class="left">
         <div class="name">#${idx + 1} ${r.city}</div>
-        <div class="meta">מספר אירועים בטווח: ${fmtNum(r.count)}</div>
       </div>
       <div class="badge">${fmtNum(r.count)}</div>
     </div>
   `).join('');
 }
 
-function renderTopDays(items) {
-  const el = document.getElementById('topDaysList');
-  el.innerHTML = items.slice(0, 20).map((r, idx) => `
-    <div class="list-item">
-      <div class="left">
-        <div class="name">#${idx + 1} ${r.date}</div>
-        <div class="meta">מספר ערים/אזורים ייחודיים: ${fmtNum(r.unique_cities)}</div>
-      </div>
-      <div class="badge">${fmtNum(r.count)}</div>
-    </div>
-  `).join('');
-}
-
-function renderTable(days) {
-  const tbody = document.getElementById('daysTable');
-  let cumulative = 0;
-  tbody.innerHTML = days.map(r => {
-    cumulative += r.count;
-    return `<tr><td>${r.date}</td><td>${fmtNum(r.count)}</td><td>${fmtNum(cumulative)}</td></tr>`;
-  }).join('');
-}
-function renderChart(days, city) {
+function renderDailyChart(days, city) {
   const labels = days.map(x => x.date);
   const values = days.map(x => x.count);
   const ctx = document.getElementById('dailyChart');
 
-  if (dashboardChart) dashboardChart.destroy();
+  if (dailyChartObj) dailyChartObj.destroy();
 
-  dashboardChart = new Chart(ctx, {
+  dailyChartObj = new Chart(ctx, {
     type: 'line',
     data: {
       labels,
@@ -488,31 +461,51 @@ function renderChart(days, city) {
         data: values,
         tension: 0.25,
         fill: true,
+        backgroundColor: 'rgba(122, 162, 255, 0.1)',
+        borderColor: '#7aa2ff',
         borderWidth: 2,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: true,
-      plugins: {
-        legend: { labels: { color: '#dbe5ff' } },
-        tooltip: { intersect: false, mode: 'index' },
-      },
+      plugins: { legend: { display: false }, tooltip: { intersect: false, mode: 'index' } },
       scales: {
-        x: {
-          ticks: { color: '#aebee4', maxRotation: 0, autoSkip: true },
-          grid: { color: 'rgba(255,255,255,.05)' },
-        },
-        y: {
-          beginAtZero: true,
-          ticks: { color: '#aebee4' },
-          grid: { color: 'rgba(255,255,255,.05)' },
-        }
+        x: { ticks: { color: '#aebee4', maxRotation: 0, autoSkip: true }, grid: { color: 'rgba(255,255,255,.05)' } },
+        y: { beginAtZero: true, ticks: { color: '#aebee4' }, grid: { color: 'rgba(255,255,255,.05)' } }
       }
     }
   });
+  setText('chartCaption', `${city} · ${labels.length} ימים`);
+}
 
-  setText('chartCaption', `${city} · ${labels.length} נקודות`);
+function renderHourlyChart(hourlyCounts, city) {
+  const labels = Array.from({length: 24}, (_, i) => `${i.toString().padStart(2, '0')}:00`);
+  const ctx = document.getElementById('hourlyChart');
+
+  if (hourlyChartObj) hourlyChartObj.destroy();
+
+  hourlyChartObj = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'התרעות',
+        data: hourlyCounts,
+        backgroundColor: '#4f7cff',
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#aebee4' }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: '#aebee4' }, grid: { color: 'rgba(255,255,255,.05)' } }
+      }
+    }
+  });
 }
 
 function renderSummary(data) {
@@ -526,9 +519,30 @@ function renderSummary(data) {
   setText('statMonthSub', `חודש שיא: ${data.summary.best_month?.period || '—'}`);
   setText('statTotalSub', `יום שיא: ${data.summary.best_day?.period || '—'}`);
 
-  renderRecords(data.summary);
-  renderChart(data.daily, data.city);
-  renderTable(data.daily);
+  // תרשימים
+  renderDailyChart(data.daily, data.city);
+  renderHourlyChart(data.hourly_counts, data.city);
+
+  // אזעקות אחרונות
+  const latestHtml = data.latest_alerts.map(a => `
+    <div class="list-item">
+      <div class="left"><div class="name" style="font-size: 16px;">${a.time}</div></div>
+      <div class="badge">${a.date}</div>
+    </div>
+  `).join('') || '<div class="muted small" style="padding:10px;">אין נתונים בטווח הנבחר.</div>';
+  document.getElementById('latestAlertsList').innerHTML = latestHtml;
+
+  // שעות נפוצות בשבוע האחרון
+  const weekHtml = data.top_week_hours.map(h => `
+    <div class="list-item" style="padding: 10px 14px;">
+        <div class="left"><div class="name">שעה ${h.hour}</div></div>
+        <div class="badge" style="background: rgba(75, 209, 139, 0.15); color: #4bd18b;">${h.count} אירועים</div>
+    </div>
+  `).join('') || '<div class="muted small">אין אזעקות בשבוע האחרון של הטווח.</div>';
+  document.getElementById('weekHoursList').innerHTML = weekHtml;
+
+  // דפוס פוטנציאלי
+  document.getElementById('patternText').textContent = data.pattern_text;
 }
 
 async function loadDashboard() {
@@ -540,15 +554,16 @@ async function loadDashboard() {
     return;
   }
   const params = new URLSearchParams({ city, from, to });
-  const data = await getJson(`/api/city-stats?${params.toString()}`);
-  renderSummary(data);
+  
+  try {
+    const data = await getJson(`/api/city-stats?${params.toString()}`);
+    renderSummary(data);
 
-  const [topCities, topDays] = await Promise.all([
-    getJson(`/api/top-cities?from=${from}&to=${to}&limit=25`),
-    getJson(`/api/top-days?from=${from}&to=${to}&limit=25`),
-  ]);
-  renderTopCities(topCities.items);
-  renderTopDays(topDays.items);
+    const topCities = await getJson(`/api/top-cities?from=${from}&to=${to}&limit=12`);
+    renderTopCities(topCities.items);
+  } catch (err) {
+    console.error("Failed to load dashboard data:", err);
+  }
 }
 
 async function refreshBackend() {
@@ -581,31 +596,30 @@ bootstrap().catch(err => {
 </html>
 '''
 
-
 @dataclass
 class EventRecord:
     ts: int
     date: str
     week: str
     month: str
+    time_str: str
+    hour: int
+    weekday: int
     cities: list[str]
     threat: int
 
-
 class DataStore:
-    def __init__(self) -> None:
+    def __init__(self):
         self.lock = threading.Lock()
-        self.last_refresh = 0.0
         self.events: list[EventRecord] = []
-        self.city_daily: dict[str, Counter[str]] = {}
-        self.city_weekly: dict[str, Counter[str]] = {}
-        self.city_monthly: dict[str, Counter[str]] = {}
-        self.city_totals: Counter[str] = Counter()
-        self.day_totals: Counter[str] = Counter()
-        self.day_unique_cities: dict[str, set[str]] = defaultdict(set)
+        self.city_daily: dict[str, Counter[str]] = defaultdict(Counter)
+        self.city_weekly: dict[str, Counter[str]] = defaultdict(Counter)
+        self.city_monthly: dict[str, Counter[str]] = defaultdict(Counter)
+        self.city_events: dict[str, list[EventRecord]] = defaultdict(list)
         self.all_cities: list[str] = []
         self.min_date: str | None = None
         self.max_date: str | None = None
+        self.last_refresh = 0
 
     def ensure_loaded(self, force: bool = False) -> None:
         now = time.time()
@@ -648,13 +662,11 @@ class DataStore:
         city_daily: dict[str, Counter[str]] = defaultdict(Counter)
         city_weekly: dict[str, Counter[str]] = defaultdict(Counter)
         city_monthly: dict[str, Counter[str]] = defaultdict(Counter)
-        city_totals: Counter[str] = Counter()
-        day_totals: Counter[str] = Counter()
-        day_unique_cities: dict[str, set[str]] = defaultdict(set)
+        city_events: dict[str, list[EventRecord]] = defaultdict(list)
         city_set: set[str] = set()
+        
         min_date = None
         max_date = None
-
         seen: set[tuple[int, tuple[str, ...]]] = set()
 
         for item in raw:
@@ -676,14 +688,22 @@ class DataStore:
                 continue
             seen.add(key)
 
-            dt = datetime.utcfromtimestamp(ts)
+            # Перевод времени в таймзону Израиля
+            dt = datetime.fromtimestamp(ts, tz=ISRAEL_TZ)
             date = dt.strftime("%Y-%m-%d")
             iso_year, iso_week, _ = dt.isocalendar()
             week = f"{iso_year}-W{iso_week:02d}"
             month = dt.strftime("%Y-%m")
+            time_str = dt.strftime("%H:%M")
+            hour = dt.hour
+            weekday = dt.weekday()
 
-            events.append(EventRecord(ts=ts, date=date, week=week, month=month, cities=cities_clean, threat=threat))
-            day_totals[date] += 1
+            record = EventRecord(
+                ts=ts, date=date, week=week, month=month, 
+                time_str=time_str, hour=hour, weekday=weekday,
+                cities=cities_clean, threat=threat
+            )
+            events.append(record)
 
             if min_date is None or date < min_date:
                 min_date = date
@@ -695,16 +715,13 @@ class DataStore:
                 city_daily[city][date] += 1
                 city_weekly[city][week] += 1
                 city_monthly[city][month] += 1
-                city_totals[city] += 1
-                day_unique_cities[date].add(city)
+                city_events[city].append(record)
 
         self.events = sorted(events, key=lambda x: x.ts)
         self.city_daily = dict(city_daily)
         self.city_weekly = dict(city_weekly)
         self.city_monthly = dict(city_monthly)
-        self.city_totals = city_totals
-        self.day_totals = day_totals
-        self.day_unique_cities = day_unique_cities
+        self.city_events = dict(city_events)
         self.all_cities = sorted(city_set)
         self.min_date = min_date
         self.max_date = max_date
@@ -715,7 +732,7 @@ class DataStore:
             try:
                 refreshed_at = json.loads(META_FILE.read_text(encoding="utf-8")).get("refreshed_at")
             except Exception:
-                refreshed_at = None
+                pass
         return {
             "total_events": len(self.events),
             "total_cities": len(self.all_cities),
@@ -724,9 +741,7 @@ class DataStore:
             "refreshed_at": refreshed_at,
         }
 
-
 store = DataStore()
-
 
 def daterange_days(start: str, end: str) -> list[str]:
     s = datetime.strptime(start, "%Y-%m-%d")
@@ -738,7 +753,6 @@ def daterange_days(start: str, end: str) -> list[str]:
         cur += timedelta(days=1)
     return days
 
-
 def normalize_city(city: str) -> str:
     city = city.strip()
     for he, en in CITY_ALIASES.items():
@@ -746,35 +760,32 @@ def normalize_city(city: str) -> str:
             return he
     return city
 
-
 @app.get("/")
 def index() -> Response:
     store.ensure_loaded()
     return Response(HTML, mimetype="text/html")
-
 
 @app.get("/api/meta")
 def api_meta():
     store.ensure_loaded()
     return jsonify(store.meta())
 
-
 @app.post("/api/refresh")
 def api_refresh():
     store.ensure_loaded(force=True)
     return jsonify({"ok": True, **store.meta()})
+
 @app.get("/api/cities")
 def api_cities():
     store.ensure_loaded()
     return jsonify({"cities": store.all_cities})
-
 
 @app.get("/api/top-cities")
 def api_top_cities():
     store.ensure_loaded()
     start = request.args.get("from") or store.min_date
     end = request.args.get("to") or store.max_date
-    limit = int(request.args.get("limit", 20))
+    limit = int(request.args.get("limit", 12))
 
     items = []
     for city, daily in store.city_daily.items():
@@ -784,26 +795,6 @@ def api_top_cities():
 
     items.sort(key=lambda x: (-x["count"], x["city"]))
     return jsonify({"items": items[:limit]})
-
-
-@app.get("/api/top-days")
-def api_top_days():
-    store.ensure_loaded()
-    start = request.args.get("from") or store.min_date
-    end = request.args.get("to") or store.max_date
-    limit = int(request.args.get("limit", 20))
-
-    items = []
-    for day, count in store.day_totals.items():
-        if start <= day <= end:
-            items.append({
-                "date": day,
-                "count": count,
-                "unique_cities": len(store.day_unique_cities.get(day, set())),
-            })
-    items.sort(key=lambda x: (-x["count"], x["date"]))
-    return jsonify({"items": items[:limit]})
-
 
 @app.get("/api/city-stats")
 def api_city_stats():
@@ -817,13 +808,59 @@ def api_city_stats():
     start = request.args.get("from") or store.min_date
     end = request.args.get("to") or store.max_date
 
+    # Основные данные города
     daily_counter = store.city_daily[city]
     weekly_counter = store.city_weekly[city]
     monthly_counter = store.city_monthly[city]
+    city_records = store.city_events.get(city, [])
 
+    # Фильтрация записей по диапазону
+    filtered_records = [r for r in city_records if start <= r.date <= end]
+
+    # Ежедневные отсчеты (для первого графика)
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
 
+    # Статистика "Сирен за последнее время" (до 10 штук)
+    latest_alerts = [{"date": r.date, "time": r.time_str} for r in filtered_records[-10:]]
+    latest_alerts.reverse()  # Новые сверху
+
+    # Распределение по часам (для второго графика)
+    hourly_counts = [0] * 24
+    for r in filtered_records:
+        hourly_counts[r.hour] += 1
+
+    # Анализ 7-ми дней от конца выбранного диапазона (Самые частые часы)
+    try:
+        end_dt = datetime.strptime(end, "%Y-%m-%d")
+        week_start_dt = end_dt - timedelta(days=6)
+        week_start_str = week_start_dt.strftime("%Y-%m-%d")
+    except ValueError:
+        week_start_str = start
+
+    week_records = [r for r in filtered_records if week_start_str <= r.date <= end]
+    week_hourly = [0] * 24
+    for r in week_records:
+        week_hourly[r.hour] += 1
+
+    top_week_hours = []
+    if sum(week_hourly) > 0:
+        sorted_hours = sorted(enumerate(week_hourly), key=lambda x: x[1], reverse=True)
+        # Берем топ-3 часа
+        top_week_hours = [{"hour": f"{h:02d}:00", "count": c} for h, c in sorted_hours[:3] if c > 0]
+
+    # Анализ паттернов (ПО ВСЕЙ истории города, не зависимо от выбранного диапазона)
+    all_hourly = [0] * 24
+    for r in city_records:
+        all_hourly[r.hour] += 1
+    
+    if sum(all_hourly) > 0:
+        best_hist_hour = max(range(24), key=lambda i: all_hourly[i])
+        pattern_text = f"על בסיס היסטוריה מלאה של נתוני העיר, נראה כי רוב אירועי ההתרעה מתרכזים סביב השעה {best_hist_hour:02d}:00."
+    else:
+        pattern_text = "אין מספיק נתונים היסטוריים לניתוח דפוסים בעיר זו."
+
+    # Сводка (Сегодня / Неделя / Месяц)
     today_date = store.max_date
     last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
     last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
@@ -832,36 +869,28 @@ def api_city_stats():
     week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_date)
     month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_date)
 
-    best_day = None
-    if daily_counter:
-        k, v = max(daily_counter.items(), key=lambda x: (x[1], x[0]))
-        best_day = {"period": k, "count": v}
-
-    best_week = None
-    if weekly_counter:
-        k, v = max(weekly_counter.items(), key=lambda x: (x[1], x[0]))
-        best_week = {"period": k, "count": v}
-
-    best_month = None
-    if monthly_counter:
-        k, v = max(monthly_counter.items(), key=lambda x: (x[1], x[0]))
-        best_month = {"period": k, "count": v}
+    best_day = max(daily_counter.items(), key=lambda x: (x[1], x[0])) if daily_counter else None
+    best_week = max(weekly_counter.items(), key=lambda x: (x[1], x[0])) if weekly_counter else None
+    best_month = max(monthly_counter.items(), key=lambda x: (x[1], x[0])) if monthly_counter else None
 
     return jsonify({
         "city": city,
         "daily": daily_rows,
+        "hourly_counts": hourly_counts,
+        "latest_alerts": latest_alerts,
+        "top_week_hours": top_week_hours,
+        "pattern_text": pattern_text,
         "summary": {
             "today": today_val,
             "today_date": today_date,
             "last_7_days": week_val,
             "last_30_days": month_val,
             "total_in_range": total_in_range,
-            "best_day": best_day,
-            "best_week": best_week,
-            "best_month": best_month,
+            "best_day": {"period": best_day[0], "count": best_day[1]} if best_day else None,
+            "best_week": {"period": best_week[0], "count": best_week[1]} if best_week else None,
+            "best_month": {"period": best_month[0], "count": best_month[1]} if best_month else None,
         },
     })
-
 
 if __name__ == "__main__":
     import os
