@@ -314,8 +314,8 @@ HTML = r'''<!doctype html>
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h3>התפלגות שעות</h3>
           <div class="muted small" id="hourlyCaption">—</div>
-        </div>
-        <canvas id="hourlyChart" height="120"></canvas>
+        </div><
+        <canvas id="hourlyChart" height="160"></canvas>
         <div class="footer-note">התפלגות כלל ההתרעות של העיר לפי שעות היממה.</div>
       </div>
 
@@ -430,9 +430,9 @@ function renderDailyChart(days, city) {
       },
       scales: {
         x: {
-          ticks: { color: '#aebee4', maxRotation: 0, autoSkip: true },
-          grid: { color: 'rgba(255,255,255,.05)' },
-        },
+         ticks: { color: '#aebee4', maxRotation: 0, autoSkip: false },
+         grid: { color: 'rgba(255,255,255,.05)' },
+},
         y: {
           beginAtZero: true,
           ticks: { color: '#aebee4' },
