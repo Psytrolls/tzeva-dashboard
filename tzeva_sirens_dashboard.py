@@ -35,7 +35,7 @@ HTML = r'''<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>לוח בקרה - צבע אדום</title>
+  <title>לוח בקרה - 926</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
@@ -327,8 +327,7 @@ HTML = r'''<!doctype html>
         <h3 style="margin-bottom:14px">שיאי העיר</h3>
         <div class="list" id="recordsList"></div>
       </div>
-
-      <div class="card span-6">
+            <div class="card span-6">
         <h3 style="margin-bottom:14px">הערים המובילות בטווח שנבחר</h3>
         <div class="list" id="topCitiesList"></div>
       </div>
@@ -473,7 +472,6 @@ function renderTable(days) {
     return `<tr><td>${r.date}</td><td>${fmtNum(r.count)}</td><td>${fmtNum(cumulative)}</td></tr>`;
   }).join('');
 }
-
 function renderChart(days, city) {
   const labels = days.map(x => x.date);
   const values = days.map(x => x.count);
@@ -633,9 +631,14 @@ class DataStore:
         )
         with urlopen(req, timeout=60) as resp:
             raw_bytes = resp.read()
+
         DATA_FILE.write_bytes(raw_bytes)
         META_FILE.write_text(
-            json.dumps({"refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {"refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         return json.loads(raw_bytes.decode("utf-8"))
@@ -760,8 +763,6 @@ def api_meta():
 def api_refresh():
     store.ensure_loaded(force=True)
     return jsonify({"ok": True, **store.meta()})
-
-
 @app.get("/api/cities")
 def api_cities():
     store.ensure_loaded()
