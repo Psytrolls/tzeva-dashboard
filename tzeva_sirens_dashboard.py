@@ -713,7 +713,7 @@ class DataStore:
             iso_year, iso_week, _ = dt.isocalendar()
             week = f"{iso_year}-W{iso_week:02d}"
             month = dt.strftime("%Y-%m")
-            hour = dt.strftime("%H:00")
+            hour = f"{dt.hour:02d}:00"
             weekday = str(dt.weekday())
 
             events.append(
@@ -741,6 +741,7 @@ class DataStore:
                 city_daily[city][date] += 1
                 city_weekly[city][week] += 1
                 city_monthly[city][month] += 1
+                hour = f"{int(hour.split(':')[0]):02d}:00"
                 city_hourly[city][hour] += 1
                 city_weekday_hourly[city][weekday][hour] += 1
                 city_totals[city] += 1
