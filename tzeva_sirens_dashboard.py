@@ -6,6 +6,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -698,6 +699,7 @@ class DataStore:
                 continue
 
             cities_clean = sorted({str(c).strip() for c in cities if str(c).strip()})
+           
             if not cities_clean:
                 continue
 
@@ -706,7 +708,7 @@ class DataStore:
                 continue
             seen.add(key)
 
-            dt = datetime.utcfromtimestamp(ts)
+            dt = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Jerusalem"))
             date = dt.strftime("%Y-%m-%d")
             iso_year, iso_week, _ = dt.isocalendar()
             week = f"{iso_year}-W{iso_week:02d}"
@@ -861,7 +863,9 @@ def api_city_stats():
     for event in reversed(store.events):
         if city in event.cities:
             recent_events.append({
-                "datetime": datetime.utcfromtimestamp(event.ts).strftime("%Y-%m-%d %H:%M:%S"),
+                "datetime": datetime.fromtimestamp(
+                    event.ts, tz=ZoneInfo("Asia/Jerusalem")
+                ).strftime("%Y-%m-%d %H:%M:%S"),
                 "date": event.date,
                 "hour": event.hour,
             })
