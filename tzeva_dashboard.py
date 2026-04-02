@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import threading
 import time
 from collections import Counter, defaultdict
@@ -938,14 +937,6 @@ async function loadMeta() {
   if (!document.getElementById('fromDate').value) {
     document.getElementById('fromDate').value = shiftDays(maxDate, -29);
   }
-} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · בסיס היסטורי: ${minDate} → ${maxDate} · עדכון היסטוריה: ${refreshed}`
-  );
-
-  const minDate = datasetMeta?.min_date || '—';
-  const maxDate = datasetMeta?.max_date || todayLocalISO();
-  const refreshed = datasetMeta?.refreshed_at || '—';
-  if (!document.getElementById('toDate').value) document.getElementById('toDate').value = maxDate;
-  if (!document.getElementById('fromDate').value) document.getElementById('fromDate').value = shiftDays(maxDate, -29);
 }
 
 async function loadCities() {
@@ -1126,7 +1117,6 @@ bootstrap().catch(err => {
 </html>
 '''
 
-
 @dataclass
 class EventRecord:
     ts: int
@@ -1303,13 +1293,6 @@ class DataStore:
         for item in results:
             dedup[item["external_id"]] = item
         return list(dedup.values())
-        try:
-            text = LOCAL_ZONE_SOURCE.read_text(encoding="utf-8").strip()
-            if text:
-                return json.loads(text)
-        except Exception as e:
-            raise RuntimeError(f"Failed to read local polygons file: {e}")
-        return {"zones": {}}
 
     def _build_indexes(self, raw: Any) -> None:
         events: list[EventRecord] = []
@@ -1626,7 +1609,7 @@ def api_stream() -> Response:
                     "source": item.get("source"),
                     "target_areas": item.get("target_areas", []),
                 }
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 sent_ids.add(external_id)
 
             removed_ids = sent_ids - current_ids
@@ -1636,7 +1619,7 @@ def api_stream() -> Response:
                     "external_id": removed_id,
                     "datetime": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 }
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
             sent_ids = current_ids.copy()
 
@@ -1645,7 +1628,7 @@ def api_stream() -> Response:
                     "type": "heartbeat",
                     "server_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 }
-                yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}"
+                yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}\n\n"
 
             time.sleep(STREAM_POLL_SECONDS)
 
