@@ -283,6 +283,36 @@ let liveCountryLayer = null;
 let liveCountryMarkers = [];
 let zoneIndex = {};
 let zoneCentroids = {};
+let hasFittedMap = false;
+const fallbackCityCoords = {
+  "אשקלון": [31.6688, 34.5743],
+  "אשדוד": [31.8014, 34.6435],
+  "באר שבע": [31.2520, 34.7915],
+  "חולון": [32.0158, 34.7874],
+  "בת ים": [32.0236, 34.7503],
+  "ראשון לציון": [31.9730, 34.7925],
+  "ירושלים": [31.7683, 35.2137],
+  "חיפה": [32.7940, 34.9896],
+  "קריית שמונה": [33.2073, 35.5708],
+  "מטולה": [33.2796, 35.5795],
+  "נהריה": [33.0059, 35.0941],
+  "שדרות": [31.5224, 34.5953],
+  "נתיבות": [31.4231, 34.5891],
+  "אופקים": [31.3141, 34.6203],
+  "גוש דן": [32.0600, 34.8000],
+  "תל אביב - מרכז העיר": [32.0853, 34.7818],
+  "תל אביב - עבר הירקון": [32.1133, 34.8044],
+  "עוטף עזה": [31.4300, 34.5000],
+  "מרכז הנגב": [31.1000, 34.9000]
+};
+
+function todayLocalISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 function fmtNum(v) { return new Intl.NumberFormat('he-IL').format(v ?? 0); }
 function setText(id, value) { document.getElementById(id).textContent = value; }
@@ -388,8 +418,9 @@ function renderMap(data) {
     }
   }
 
-  if (bounds.length) {
+  if (bounds.length && !hasFittedMap) {
     map.fitBounds(bounds, { padding: [30, 30] });
+    hasFittedMap = true;
   }
 
   setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים · ${zones.length} אזורי עיר נבחרת`);
@@ -439,7 +470,7 @@ function handleLiveCountryEvent(payload) {
   const label = payload.datetime || 'אירוע חדש';
 
   payload.cities.forEach(city => {
-    const centroid = zoneCentroids[city];
+    const centroid = zoneCentroids[city] || fallbackCityCoords[city];
     if (centroid) {
       addLiveMarker(centroid[0], centroid[1], label, city);
     }
@@ -500,13 +531,15 @@ async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
   setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
 
-  if (datasetMeta.max_date) {
-    if (!document.getElementById('toDate').value) {
-      document.getElementById('toDate').value = datasetMeta.max_date;
-    }
-    if (!document.getElementById('fromDate').value) {
-      document.getElementById('fromDate').value = shiftDays(datasetMeta.max_date, -29);
-    }
+  const today = todayLocalISO();
+  const maxAllowed = datasetMeta.max_date || today;
+  const defaultTo = today <= maxAllowed ? today : maxAllowed;
+
+  if (!document.getElementById('toDate').value) {
+    document.getElementById('toDate').value = defaultTo;
+  }
+  if (!document.getElementById('fromDate').value) {
+    document.getElementById('fromDate').value = shiftDays(defaultTo, -29);
   }
 }
 
@@ -524,15 +557,19 @@ async function loadCities() {
 
 function applyPreset() {
   const preset = document.getElementById('preset').value;
-  if (!datasetMeta?.max_date) return;
+  const today = todayLocalISO();
+  const maxAllowed = datasetMeta?.max_date || today;
+  const defaultTo = today <= maxAllowed ? today : maxAllowed;
+
   if (preset === 'all') {
-    document.getElementById('fromDate').value = datasetMeta.min_date;
-    document.getElementById('toDate').value = datasetMeta.max_date;
+    document.getElementById('fromDate').value = datasetMeta?.min_date || defaultTo;
+    document.getElementById('toDate').value = defaultTo;
     return;
   }
+
   const days = parseInt(preset, 10);
-  document.getElementById('toDate').value = datasetMeta.max_date;
-  document.getElementById('fromDate').value = shiftDays(datasetMeta.max_date, -(days - 1));
+  document.getElementById('toDate').value = defaultTo;
+  document.getElementById('fromDate').value = shiftDays(defaultTo, -(days - 1));
 }
 
 function renderSummary(data) {
@@ -670,7 +707,10 @@ async function bootstrap() {
     applyPreset();
     loadDashboard();
   });
-  document.getElementById('citySelect').addEventListener('change', loadDashboard);
+  document.getElementById('citySelect').addEventListener('change', () => {
+    hasFittedMap = false;
+    loadDashboard();
+  });
 }
 
 bootstrap().catch(err => {
