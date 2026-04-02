@@ -18,16 +18,21 @@ app = Flask(__name__)
 TZ = ZoneInfo("Asia/Jerusalem")
 
 DATA_URL = "https://www.tzevaadom.co.il/static/historical/all.json"
-ZONE_URL = "https://iwm.diskin.net/alert-zones.json"
+LOCAL_ZONE_SOURCE = Path("alert-zones-local.json")
 
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
 DATA_FILE = CACHE_DIR / "all.json"
-ZONE_FILE = CACHE_DIR / "alert-zones.json"
 META_FILE = CACHE_DIR / "meta.json"
 
 REFRESH_SECONDS = 600
 ZONE_REFRESH_SECONDS = 3600
+ZONE_NAME_ALIASES = {
+    "תל אביב מרכז העיר": "תל אביב - מרכז העיר",
+    "תל אביב עבר הירקון": "תל אביב - עבר הירקון",
+    "תל אביב-מרכז העיר": "תל אביב - מרכז העיר",
+    "תל אביב-עבר הירקון": "תל אביב - עבר הירקון",
+}
 STREAM_POLL_SECONDS = 3
 DEFAULT_THREAT_TYPES = {0}
 
@@ -223,7 +228,7 @@ HTML = r'''<!doctype html>
           </div>
           <div id="map"></div>
           <div class="legend">
-            <div class="pill"><span class="dot red"></span>אירועי לייב מכל הארץ</div>
+            <div class="pill"><span class="dot red"></span>פוליגוני לייב מכל הארץ</div>
             <div class="pill"><span class="dot yellow"></span>מסלול משוער לעיר הנבחרת</div>
             <div class="pill"><span class="dot purple"></span>אזור אי-ודאות</div>
             <div class="pill"><span class="dot green"></span>שידור חי מחובר</div>
@@ -281,6 +286,7 @@ let mapLayer = null;
 let stream = null;
 let liveCountryLayer = null;
 let liveCountryMarkers = [];
+let liveCountryPolygons = [];
 let zoneIndex = {};
 let zoneCentroids = {};
 let hasFittedMap = false;
@@ -358,7 +364,7 @@ function initCountryMapView() {
     map.setView([31.6, 35.0], 7);
     hasFittedMap = true;
   }
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
+  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
 }
 
 function renderMapOverlay(data) {
@@ -416,7 +422,36 @@ function renderMapOverlay(data) {
     }
   }
 
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
+  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
+}
+
+function pulsePolygon(layer, durationMs = 120000) {
+  const started = Date.now();
+  let on = false;
+  const timer = setInterval(() => {
+    const elapsed = Date.now() - started;
+    if (elapsed >= durationMs) {
+      clearInterval(timer);
+      try {
+        layer.setStyle({
+          color: '#ff4d4d',
+          weight: 2,
+          fillColor: '#ff4d4d',
+          fillOpacity: 0.18,
+        });
+      } catch (e) {}
+      return;
+    }
+    on = !on;
+    try {
+      layer.setStyle({
+        color: on ? '#ffd166' : '#ff4d4d',
+        weight: on ? 3 : 2,
+        fillColor: on ? '#ff7d7d' : '#ff4d4d',
+        fillOpacity: on ? 0.30 : 0.18,
+      });
+    } catch (e) {}
+  }, 700);
 }
 
 function addLiveMarker(lat, lon, label, city) {
@@ -427,7 +462,7 @@ function addLiveMarker(lat, lon, label, city) {
     weight: 2,
     fillColor: '#ff2d55',
     fillOpacity: 0.9,
-  }).bindPopup(`<b>${city}</b><br>${label}`);
+  }).bindPopup(`<b>${city}</b><br>${label}<br>מיקום משוער`);
   marker.addTo(liveCountryLayer);
   liveCountryMarkers.push(marker);
 
@@ -435,27 +470,48 @@ function addLiveMarker(lat, lon, label, city) {
     try {
       liveCountryLayer.removeLayer(marker);
       liveCountryMarkers = liveCountryMarkers.filter(m => m !== marker);
-      setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
+      setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
     } catch (e) {}
   }, 180000);
 }
 
-function flashZone(zoneName, label) {
+function addLivePolygon(zoneName, label) {
   ensureMap();
   const zone = zoneIndex[zoneName];
-  if (!zone || !zone.polygon?.length) return;
+  if (!zone || !zone.polygon?.length) return false;
 
-  const poly = L.polygon(zone.polygon, {
+  const polygon = L.polygon(zone.polygon, {
     color: '#ff4d4d',
     weight: 2,
     fillColor: '#ff4d4d',
-    fillOpacity: 0.28,
-  }).bindPopup(`<b>${zoneName}</b><br>${label}`);
-  poly.addTo(liveCountryLayer);
+    fillOpacity: 0.18,
+  }).bindPopup(`
+    <b>${zoneName}</b><br>
+    ${label}<br>
+    זמן מיגון: ${zone.countdown || '—'} שנ׳<br>
+    ${zone.en || ''}
+  `);
+  polygon.addTo(liveCountryLayer);
+  pulsePolygon(polygon);
+  liveCountryPolygons.push(polygon);
+
+  polygon.on('click', () => {
+    polygon.openPopup();
+  });
 
   setTimeout(() => {
-    try { liveCountryLayer.removeLayer(poly); } catch (e) {}
-  }, 120000);
+    try {
+      liveCountryLayer.removeLayer(polygon);
+      liveCountryPolygons = liveCountryPolygons.filter(p => p !== polygon);
+      setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
+    } catch (e) {}
+  }, 180000);
+
+  return true;
+}
+
+function flashZone(zoneName, label) {
+  return addLivePolygon(zoneName, label);
 }
 
 function handleLiveCountryEvent(payload) {
@@ -463,14 +519,16 @@ function handleLiveCountryEvent(payload) {
   const label = payload.datetime || 'אירוע חדש';
 
   payload.cities.forEach(city => {
-    const centroid = zoneCentroids[city] || fallbackCityCoords[city];
-    if (centroid) {
-      addLiveMarker(centroid[0], centroid[1], label, city);
+    const hasPolygon = addLivePolygon(city, label);
+    if (!hasPolygon) {
+      const centroid = zoneCentroids[city] || fallbackCityCoords[city];
+      if (centroid) {
+        addLiveMarker(centroid[0], centroid[1], label, city);
+      }
     }
-    flashZone(city, label);
   });
 
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
+  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
 }
 
 function renderSimpleList(elementId, items, mapper) {
@@ -797,42 +855,15 @@ class DataStore:
         return json.loads(raw_text)
 
     def _download_zones(self, force: bool = False) -> dict[str, Any]:
-        if not force and ZONE_FILE.exists():
-            age = time.time() - ZONE_FILE.stat().st_mtime
-            if age < ZONE_REFRESH_SECONDS:
-                try:
-                    cached = ZONE_FILE.read_text(encoding="utf-8").strip()
-                    if cached:
-                        return json.loads(cached)
-                except Exception:
-                    pass
+        if LOCAL_ZONE_SOURCE.exists():
+            try:
+                text = LOCAL_ZONE_SOURCE.read_text(encoding="utf-8").strip()
+                if text:
+                    return json.loads(text)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read local polygons file: {e}")
 
-        try:
-            req = Request(
-                ZONE_URL,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json, text/plain, */*",
-                },
-            )
-            with urlopen(req, timeout=60) as resp:
-                raw_bytes = resp.read()
-
-            raw_text = raw_bytes.decode("utf-8").strip()
-            if not raw_text:
-                raise RuntimeError("Downloaded alert-zones.json is empty")
-
-            ZONE_FILE.write_text(raw_text, encoding="utf-8")
-            return json.loads(raw_text)
-        except Exception:
-            if ZONE_FILE.exists():
-                try:
-                    cached = ZONE_FILE.read_text(encoding="utf-8").strip()
-                    if cached:
-                        return json.loads(cached)
-                except Exception:
-                    pass
-            return {"zones": {}}
+        return {"zones": {}}
 
     def _build_indexes(self, raw: Any) -> None:
         events: list[EventRecord] = []
@@ -909,10 +940,11 @@ class DataStore:
         parsed: dict[str, dict[str, Any]] = {}
         centroids: dict[str, tuple[float, float]] = {}
 
-        for name, payload in zones.items():
-            if not isinstance(name, str) or not isinstance(payload, dict):
+        for raw_name, payload in zones.items():
+            if not isinstance(raw_name, str) or not isinstance(payload, dict):
                 continue
 
+            name = self._normalize_zone_name(raw_name)
             polygon = payload.get("polygon") or []
             latlngs: list[list[float]] = []
             for point in polygon:
@@ -923,17 +955,33 @@ class DataStore:
                         latlngs.append([float(lat), float(lon)])
 
             centroid = self._polygon_centroid(latlngs) if latlngs else CITY_COORDS.get(name)
-            parsed[name] = {
+            zone_entry = {
                 "id": payload.get("id"),
                 "en": payload.get("en"),
                 "countdown": payload.get("countdown"),
                 "polygon": latlngs,
             }
+            parsed[name] = zone_entry
+            parsed[raw_name] = zone_entry
             if centroid:
                 centroids[name] = centroid
+                centroids[raw_name] = centroid
+
+        for alias, canonical in ZONE_NAME_ALIASES.items():
+            if canonical in parsed:
+                parsed[alias] = parsed[canonical]
+                if canonical in centroids:
+                    centroids[alias] = centroids[canonical]
 
         self.zones = parsed
         self.zone_centroids = centroids
+
+    @staticmethod
+    def _normalize_zone_name(name: str) -> str:
+        normalized = " ".join(name.strip().split())
+        normalized = normalized.replace("–", "-").replace("—", "-")
+        normalized = normalized.replace(" - ", "-")
+        return ZONE_NAME_ALIASES.get(normalized, normalized)
 
     @staticmethod
     def _polygon_centroid(points: list[list[float]]) -> tuple[float, float] | None:
