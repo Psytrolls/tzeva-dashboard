@@ -175,7 +175,7 @@ HTML = r'''<!doctype html>
     <div class="card" style="margin-bottom:20px;">
       <div class="title">🚨 Iron Monitor Live</div>
       <div class="sub">
-        דשבורד עם שכבת אזורי התרעה אמיתיים, עדכון חי דרך SSE, סטטיסטיקה היסטורית, ומסלול משוער ניסיוני.
+        דשבורד עם מפת לייב ארצית נפרדת מהחיפוש, סטטיסטיקה היסטורית, ומסלול משוער ניסיוני.
         הקו הצהוב והאזור הסגול הם אומדן בלבד — לא נתון רשמי ולא מידע מכ״מי.
       </div>
       <div class="small" id="datasetMeta" style="margin-top:10px;">טוען נתונים...</div>
@@ -243,7 +243,7 @@ HTML = r'''<!doctype html>
         <div class="card">
           <h3 style="margin-bottom:14px;">סיכום</h3>
           <div class="stats">
-            <div class="stat"><div class="k">היום האחרון בבסיס</div><div class="v" id="statToday">—</div><div class="s" id="statTodaySub">—</div></div>
+            <div class="stat"><div class="k">היום</div><div class="v" id="statToday">—</div><div class="s" id="statTodaySub">—</div></div>
             <div class="stat"><div class="k">7 ימים אחרונים</div><div class="v" id="statWeek">—</div><div class="s" id="statWeekSub">—</div></div>
             <div class="stat"><div class="k">30 ימים אחרונים</div><div class="v" id="statMonth">—</div><div class="s" id="statMonthSub">—</div></div>
             <div class="stat"><div class="k">סה״כ בטווח</div><div class="v" id="statTotal">—</div><div class="s" id="statTotalSub">—</div></div>
@@ -284,6 +284,7 @@ let liveCountryMarkers = [];
 let zoneIndex = {};
 let zoneCentroids = {};
 let hasFittedMap = false;
+
 const fallbackCityCoords = {
   "אשקלון": [31.6688, 34.5743],
   "אשדוד": [31.8014, 34.6435],
@@ -316,11 +317,17 @@ function todayLocalISO() {
 
 function fmtNum(v) { return new Intl.NumberFormat('he-IL').format(v ?? 0); }
 function setText(id, value) { document.getElementById(id).textContent = value; }
-function parseISODate(dateStr) { return new Date(dateStr + 'T00:00:00'); }
+function parseISODate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0);
+}
 function shiftDays(dateStr, days) {
   const d = parseISODate(dateStr);
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 async function getJson(url, options = {}) {
@@ -334,7 +341,7 @@ async function getJson(url, options = {}) {
 
 function ensureMap() {
   if (map) return;
-  map = L.map('map', { zoomControl: true }).setView([31.6, 34.9], 8);
+  map = L.map('map', { zoomControl: true }).setView([31.6, 35.0], 7);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 20,
     subdomains: 'abcd',
@@ -345,14 +352,21 @@ function ensureMap() {
   setTimeout(() => map.invalidateSize(), 300);
 }
 
-function renderMap(data) {
+function initCountryMapView() {
+  ensureMap();
+  if (!hasFittedMap) {
+    map.setView([31.6, 35.0], 7);
+    hasFittedMap = true;
+  }
+  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
+}
+
+function renderMapOverlay(data) {
   ensureMap();
   mapLayer.clearLayers();
 
-  const points = data.recent_map_events || [];
-  const zones = data.recent_zone_polygons || [];
   const prediction = data.prediction_map || null;
-  const bounds = [];
+  const zones = data.recent_zone_polygons || [];
 
   for (const z of zones) {
     if (z.polygon?.length) {
@@ -360,21 +374,9 @@ function renderMap(data) {
         color: '#ff6464',
         weight: 1,
         fillColor: '#ff4d4d',
-        fillOpacity: 0.14,
+        fillOpacity: 0.10,
       }).bindPopup(`<b>${z.name}</b><br>זמן מיגון: ${z.countdown || '—'} שנ׳`).addTo(mapLayer);
-      bounds.push(...z.polygon);
     }
-  }
-
-  for (const p of points) {
-    L.circleMarker([p.lat, p.lon], {
-      radius: 6,
-      color: '#ff7d7d',
-      weight: 2,
-      fillColor: '#ff4d4d',
-      fillOpacity: 0.75,
-    }).bindPopup(`<b>${p.city}</b><br>${p.datetime}`).addTo(mapLayer);
-    bounds.push([p.lat, p.lon]);
   }
 
   if (prediction?.target_polygon?.length) {
@@ -382,9 +384,8 @@ function renderMap(data) {
       color: '#ffb3b3',
       weight: 2,
       fillColor: '#ff7d7d',
-      fillOpacity: 0.08,
+      fillOpacity: 0.06,
     }).bindPopup(`<b>אזור יעד</b><br>${prediction.target_city || '—'}`).addTo(mapLayer);
-    bounds.push(...prediction.target_polygon);
   }
 
   if (prediction?.path?.length) {
@@ -394,7 +395,6 @@ function renderMap(data) {
       opacity: 0.95,
       dashArray: '8,8'
     }).addTo(mapLayer);
-    bounds.push(...prediction.path);
 
     if (prediction.cone?.length) {
       L.polygon(prediction.cone, {
@@ -403,7 +403,6 @@ function renderMap(data) {
         fillColor: '#8c3dff',
         fillOpacity: 0.18,
       }).addTo(mapLayer);
-      bounds.push(...prediction.cone);
     }
 
     if (prediction.impact) {
@@ -414,16 +413,10 @@ function renderMap(data) {
         fillColor: '#ffcc4d',
         fillOpacity: 0.95,
       }).bindPopup(`<b>נקודת יעד משוערת</b><br>${prediction.target_city || '—'}<br>${prediction.reason || ''}`).addTo(mapLayer);
-      bounds.push(prediction.impact);
     }
   }
 
-  if (bounds.length && !hasFittedMap) {
-    map.fitBounds(bounds, { padding: [30, 30] });
-    hasFittedMap = true;
-  }
-
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים · ${zones.length} אזורי עיר נבחרת`);
+  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
 }
 
 function addLiveMarker(lat, lon, label, city) {
@@ -532,8 +525,7 @@ async function loadMeta() {
   setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
 
   const today = todayLocalISO();
-  const maxAllowed = datasetMeta.max_date || today;
-  const defaultTo = today <= maxAllowed ? today : maxAllowed;
+  const defaultTo = today;
 
   if (!document.getElementById('toDate').value) {
     document.getElementById('toDate').value = defaultTo;
@@ -558,18 +550,16 @@ async function loadCities() {
 function applyPreset() {
   const preset = document.getElementById('preset').value;
   const today = todayLocalISO();
-  const maxAllowed = datasetMeta?.max_date || today;
-  const defaultTo = today <= maxAllowed ? today : maxAllowed;
 
   if (preset === 'all') {
-    document.getElementById('fromDate').value = datasetMeta?.min_date || defaultTo;
-    document.getElementById('toDate').value = defaultTo;
+    document.getElementById('fromDate').value = datasetMeta?.min_date || today;
+    document.getElementById('toDate').value = today;
     return;
   }
 
   const days = parseInt(preset, 10);
-  document.getElementById('toDate').value = defaultTo;
-  document.getElementById('fromDate').value = shiftDays(defaultTo, -(days - 1));
+  document.getElementById('toDate').value = today;
+  document.getElementById('fromDate').value = shiftDays(today, -(days - 1));
 }
 
 function renderSummary(data) {
@@ -585,7 +575,7 @@ function renderSummary(data) {
 
   renderDailyChart(data.daily, data.city);
   renderHourlyChart(data.hourly_distribution);
-  renderMap(data);
+  renderMapOverlay(data);
 
   renderSimpleList('recentEventsList', data.recent_events, (r) => `
     <div class="row">
@@ -633,8 +623,7 @@ async function loadDashboard() {
 
   if (!city) {
     setText('liveStatus', 'ממתין לנתונים...');
-    ensureMap();
-    setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
+    initCountryMapView();
     return;
   }
 
@@ -695,9 +684,18 @@ function connectLiveStream() {
 async function bootstrap() {
   await loadMeta();
   await loadCities();
-  const zoneData = await getJson('/api/zones');
-  zoneIndex = zoneData.zones || {};
-  zoneCentroids = zoneData.centroids || {};
+
+  try {
+    const zoneData = await getJson('/api/zones');
+    zoneIndex = zoneData.zones || {};
+    zoneCentroids = zoneData.centroids || {};
+  } catch (e) {
+    console.warn('zones unavailable', e);
+    zoneIndex = {};
+    zoneCentroids = {};
+  }
+
+  initCountryMapView();
   await loadDashboard();
   connectLiveStream();
 
@@ -707,10 +705,7 @@ async function bootstrap() {
     applyPreset();
     loadDashboard();
   });
-  document.getElementById('citySelect').addEventListener('change', () => {
-    hasFittedMap = false;
-    loadDashboard();
-  });
+  document.getElementById('citySelect').addEventListener('change', loadDashboard);
 }
 
 bootstrap().catch(err => {
@@ -1032,26 +1027,6 @@ def city_coord(city: str) -> tuple[float, float] | None:
     return store.zone_centroids.get(city) or CITY_COORDS.get(city)
 
 
-def find_recent_points_for_city(city: str, limit: int = 20) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for event in reversed(store.events):
-        if city not in event.cities:
-            continue
-        coord = city_coord(city)
-        if not coord:
-            continue
-        result.append({
-            "city": city,
-            "lat": coord[0],
-            "lon": coord[1],
-            "datetime": datetime.fromtimestamp(event.ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S"),
-            "ts": event.ts,
-        })
-        if len(result) >= limit:
-            break
-    return list(reversed(result))
-
-
 def zones_for_recent_events(city: str, limit: int = 12) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1172,13 +1147,14 @@ def api_city_stats():
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
 
-    today_date = store.max_date
-    last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
-    last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
+    today_real = datetime.now(TZ).strftime("%Y-%m-%d")
+    today_date = today_real
+    last_7_start = (datetime.strptime(today_real, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
+    last_30_start = (datetime.strptime(today_real, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
 
-    today_val = daily_counter.get(today_date, 0)
-    week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_date)
-    month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_date)
+    today_val = daily_counter.get(today_real, 0)
+    week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_real)
+    month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_real)
 
     hourly_distribution = []
     for h in range(24):
@@ -1233,7 +1209,6 @@ def api_city_stats():
         "hourly_distribution": hourly_distribution,
         "top_hours": top_hours,
         "recent_events": recent_events,
-        "recent_map_events": find_recent_points_for_city(city, limit=12),
         "recent_zone_polygons": zones_for_recent_events(city, limit=12),
         "prediction_map": build_city_prediction(city),
         "summary": {
