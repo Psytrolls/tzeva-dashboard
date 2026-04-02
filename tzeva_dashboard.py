@@ -26,15 +26,14 @@ DATA_FILE = CACHE_DIR / "all.json"
 META_FILE = CACHE_DIR / "meta.json"
 
 REFRESH_SECONDS = 600
-ZONE_REFRESH_SECONDS = 3600
+STREAM_POLL_SECONDS = 3
+DEFAULT_THREAT_TYPES = {0}
 ZONE_NAME_ALIASES = {
     "תל אביב מרכז העיר": "תל אביב - מרכז העיר",
     "תל אביב עבר הירקון": "תל אביב - עבר הירקון",
     "תל אביב-מרכז העיר": "תל אביב - מרכז העיר",
     "תל אביב-עבר הירקון": "תל אביב - עבר הירקון",
 }
-STREAM_POLL_SECONDS = 3
-DEFAULT_THREAT_TYPES = {0}
 
 CITY_COORDS: dict[str, tuple[float, float]] = {
     "אשקלון": (31.6688, 34.5743),
@@ -180,8 +179,7 @@ HTML = r'''<!doctype html>
     <div class="card" style="margin-bottom:20px;">
       <div class="title">🚨 Iron Monitor Live</div>
       <div class="sub">
-        דשבורד עם מפת לייב ארצית נפרדת מהחיפוש, סטטיסטיקה היסטורית, ומסלול משוער ניסיוני.
-        הקו הצהוב והאזור הסגול הם אומדן בלבד — לא נתון רשמי ולא מידע מכ״מי.
+        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים.
       </div>
       <div class="small" id="datasetMeta" style="margin-top:10px;">טוען נתונים...</div>
       <div class="small" id="liveStatus" style="margin-top:6px;">מתחבר לשידור חי...</div>
@@ -228,9 +226,7 @@ HTML = r'''<!doctype html>
           </div>
           <div id="map"></div>
           <div class="legend">
-            <div class="pill"><span class="dot red"></span>פוליגוני לייב מכל הארץ</div>
-            <div class="pill"><span class="dot yellow"></span>מסלול משוער לעיר הנבחרת</div>
-            <div class="pill"><span class="dot purple"></span>אזור אי-ודאות</div>
+            <div class="pill"><span class="dot red"></span>פוליגוני לייב / סימונים</div>
             <div class="pill"><span class="dot green"></span>שידור חי מחובר</div>
           </div>
         </div>
@@ -269,7 +265,7 @@ HTML = r'''<!doctype html>
         </div>
 
         <div class="card">
-          <h3 style="margin-bottom:14px;">אומדן מסלול</h3>
+          <h3 style="margin-bottom:14px;">אומדן סטטיסטי</h3>
           <div class="list" id="predictionList"></div>
         </div>
       </div>
@@ -282,7 +278,6 @@ let allCities = [];
 let dailyChart = null;
 let hourlyChart = null;
 let map = null;
-let mapLayer = null;
 let stream = null;
 let liveCountryLayer = null;
 let liveCountryMarkers = [];
@@ -353,7 +348,6 @@ function ensureMap() {
     subdomains: 'abcd',
     attribution: '&copy; OpenStreetMap &copy; CARTO'
   }).addTo(map);
-  mapLayer = L.layerGroup().addTo(map);
   liveCountryLayer = L.layerGroup().addTo(map);
   setTimeout(() => map.invalidateSize(), 300);
 }
@@ -367,62 +361,12 @@ function initCountryMapView() {
   setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
 }
 
-function renderMapOverlay(data) {
-  ensureMap();
-  mapLayer.clearLayers();
-
-  const prediction = data.prediction_map || null;
-  const zones = data.recent_zone_polygons || [];
-
-  for (const z of zones) {
-    if (z.polygon?.length) {
-      L.polygon(z.polygon, {
-        color: '#ff6464',
-        weight: 1,
-        fillColor: '#ff4d4d',
-        fillOpacity: 0.10,
-      }).bindPopup(`<b>${z.name}</b><br>זמן מיגון: ${z.countdown || '—'} שנ׳`).addTo(mapLayer);
-    }
-  }
-
-  if (prediction?.target_polygon?.length) {
-    L.polygon(prediction.target_polygon, {
-      color: '#ffb3b3',
-      weight: 2,
-      fillColor: '#ff7d7d',
-      fillOpacity: 0.06,
-    }).bindPopup(`<b>אזור יעד</b><br>${prediction.target_city || '—'}`).addTo(mapLayer);
-  }
-
-  if (prediction?.path?.length) {
-    L.polyline(prediction.path, {
-      color: '#ffd166',
-      weight: 3,
-      opacity: 0.95,
-      dashArray: '8,8'
-    }).addTo(mapLayer);
-
-    if (prediction.cone?.length) {
-      L.polygon(prediction.cone, {
-        color: '#b56cff',
-        weight: 1,
-        fillColor: '#8c3dff',
-        fillOpacity: 0.18,
-      }).addTo(mapLayer);
-    }
-
-    if (prediction.impact) {
-      L.circleMarker([prediction.impact[0], prediction.impact[1]], {
-        radius: 7,
-        color: '#ffd166',
-        weight: 2,
-        fillColor: '#ffcc4d',
-        fillOpacity: 0.95,
-      }).bindPopup(`<b>נקודת יעד משוערת</b><br>${prediction.target_city || '—'}<br>${prediction.reason || ''}`).addTo(mapLayer);
-    }
-  }
-
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
+function clearLiveLayers() {
+  if (!liveCountryLayer) return;
+  liveCountryLayer.clearLayers();
+  liveCountryMarkers = [];
+  liveCountryPolygons = [];
+  setText('mapCaption', 'לייב ארצי פעיל · 0 פוליגונים · 0 סימונים');
 }
 
 function pulsePolygon(layer, durationMs = 120000) {
@@ -433,12 +377,7 @@ function pulsePolygon(layer, durationMs = 120000) {
     if (elapsed >= durationMs) {
       clearInterval(timer);
       try {
-        layer.setStyle({
-          color: '#ff4d4d',
-          weight: 2,
-          fillColor: '#ff4d4d',
-          fillOpacity: 0.18,
-        });
+        layer.setStyle({ color: '#ff4d4d', weight: 2, fillColor: '#ff4d4d', fillOpacity: 0.18 });
       } catch (e) {}
       return;
     }
@@ -495,9 +434,7 @@ function addLivePolygon(zoneName, label) {
   pulsePolygon(polygon);
   liveCountryPolygons.push(polygon);
 
-  polygon.on('click', () => {
-    polygon.openPopup();
-  });
+  polygon.on('click', () => polygon.openPopup());
 
   setTimeout(() => {
     try {
@@ -508,10 +445,6 @@ function addLivePolygon(zoneName, label) {
   }, 180000);
 
   return true;
-}
-
-function flashZone(zoneName, label) {
-  return addLivePolygon(zoneName, label);
 }
 
 function handleLiveCountryEvent(payload) {
@@ -542,10 +475,7 @@ function renderDailyChart(days, city) {
   if (dailyChart) dailyChart.destroy();
   dailyChart = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [{ label: city, data: values, tension: .25, fill: true, borderWidth: 2 }]
-    },
+    data: { labels, datasets: [{ label: city, data: values, tension: .25, fill: true, borderWidth: 2 }] },
     options: {
       responsive: true,
       plugins: { legend: { labels: { color: '#dbe5ff' } } },
@@ -580,17 +510,11 @@ function renderHourlyChart(items) {
 
 async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
-  setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
+  setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'}`);
 
   const today = todayLocalISO();
-  const defaultTo = today;
-
-  if (!document.getElementById('toDate').value) {
-    document.getElementById('toDate').value = defaultTo;
-  }
-  if (!document.getElementById('fromDate').value) {
-    document.getElementById('fromDate').value = shiftDays(defaultTo, -29);
-  }
+  if (!document.getElementById('toDate').value) document.getElementById('toDate').value = today;
+  if (!document.getElementById('fromDate').value) document.getElementById('fromDate').value = shiftDays(today, -29);
 }
 
 async function loadCities() {
@@ -608,13 +532,11 @@ async function loadCities() {
 function applyPreset() {
   const preset = document.getElementById('preset').value;
   const today = todayLocalISO();
-
   if (preset === 'all') {
     document.getElementById('fromDate').value = datasetMeta?.min_date || today;
     document.getElementById('toDate').value = today;
     return;
   }
-
   const days = parseInt(preset, 10);
   document.getElementById('toDate').value = today;
   document.getElementById('fromDate').value = shiftDays(today, -(days - 1));
@@ -633,7 +555,6 @@ function renderSummary(data) {
 
   renderDailyChart(data.daily, data.city);
   renderHourlyChart(data.hourly_distribution);
-  renderMapOverlay(data);
 
   renderSimpleList('recentEventsList', data.recent_events, (r) => `
     <div class="row">
@@ -645,18 +566,13 @@ function renderSummary(data) {
     </div>
   `);
 
-  const predictionRows = [];
-  if (data.prediction_map) {
-    predictionRows.push({ title: 'מקור משוער', meta: data.prediction_map.source_city || '—', badge: 'מוצא' });
-    predictionRows.push({ title: 'יעד משוער', meta: data.prediction_map.target_city || '—', badge: 'יעד' });
-    predictionRows.push({ title: 'מרחק משוער', meta: `${data.prediction_map.distance_km || 0} ק״מ`, badge: 'טווח' });
-    predictionRows.push({ title: 'זמן טיסה משוער', meta: data.prediction_map.flight_time_human || '—', badge: 'ETA' });
-    predictionRows.push({ title: 'הסבר', meta: data.prediction_map.reason || '—', badge: 'אומדן' });
-  } else {
-    predictionRows.push({ title: 'מצב', meta: 'אין מספיק אירועים עם קואורדינטות כדי לבנות אומדן מסלול.', badge: 'חסר' });
-  }
+  const rows = [
+    { title: 'שעת שיא', meta: data.summary.prediction?.best_hour || '—', badge: 'שעה' },
+    { title: 'יום בולט', meta: data.summary.prediction?.best_weekday || '—', badge: 'יום' },
+    { title: 'הסבר', meta: data.summary.prediction?.reason || '—', badge: 'ניתוח' },
+  ];
 
-  renderSimpleList('predictionList', predictionRows, (r) => `
+  renderSimpleList('predictionList', rows, (r) => `
     <div class="row">
       <div>
         <div class="name">${r.title}</div>
@@ -674,16 +590,10 @@ async function loadDashboard() {
 
   if (!city) {
     city = allCities.includes('חולון') ? 'חולון' : (allCities[0] || '');
-    if (city) {
-      document.getElementById('citySelect').value = city;
-    }
+    if (city) document.getElementById('citySelect').value = city;
   }
 
-  if (!city) {
-    setText('liveStatus', 'ממתין לנתונים...');
-    initCountryMapView();
-    return;
-  }
+  if (!city) return;
 
   const params = new URLSearchParams({ city, from, to });
   const data = await getJson(`/api/city-stats?${params.toString()}`);
@@ -717,7 +627,6 @@ function connectLiveStream() {
   stream.onmessage = async (event) => {
     try {
       const payload = JSON.parse(event.data);
-
       if (payload.type === 'heartbeat') {
         setText('liveStatus', `🟢 שידור חי מחובר · פעימה אחרונה: ${payload.server_time}`);
         return;
@@ -754,6 +663,7 @@ async function bootstrap() {
   }
 
   initCountryMapView();
+  clearLiveLayers();
   await loadDashboard();
   connectLiveStream();
 
@@ -792,7 +702,6 @@ class DataStore:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.last_refresh = 0.0
-        self.last_zone_refresh = 0.0
         self.events: list[EventRecord] = []
         self.city_daily: dict[str, Counter[str]] = {}
         self.city_weekly: dict[str, Counter[str]] = {}
@@ -809,18 +718,14 @@ class DataStore:
     def ensure_loaded(self, force: bool = False) -> None:
         now = time.time()
         with self.lock:
-            needs_data = force or not self.events or (now - self.last_refresh) >= REFRESH_SECONDS
-            needs_zones = force or not self.zones or (now - self.last_zone_refresh) >= ZONE_REFRESH_SECONDS
-
-            if needs_zones:
-                zone_raw = self._download_zones(force=force)
+            if not self.zones:
+                zone_raw = self._load_local_zones()
                 self._build_zone_index(zone_raw)
-                self.last_zone_refresh = now
-
-            if needs_data:
-                raw = self._download_or_load(force=force)
-                self._build_indexes(raw)
-                self.last_refresh = now
+            if not force and self.events and (now - self.last_refresh) < REFRESH_SECONDS:
+                return
+            raw = self._download_or_load(force=force)
+            self._build_indexes(raw)
+            self.last_refresh = now
 
     def _download_or_load(self, force: bool = False) -> Any:
         if not force and DATA_FILE.exists():
@@ -854,15 +759,15 @@ class DataStore:
         )
         return json.loads(raw_text)
 
-    def _download_zones(self, force: bool = False) -> dict[str, Any]:
-        if LOCAL_ZONE_SOURCE.exists():
-            try:
-                text = LOCAL_ZONE_SOURCE.read_text(encoding="utf-8").strip()
-                if text:
-                    return json.loads(text)
-            except Exception as e:
-                raise RuntimeError(f"Failed to read local polygons file: {e}")
-
+    def _load_local_zones(self) -> dict[str, Any]:
+        if not LOCAL_ZONE_SOURCE.exists():
+            return {"zones": {}}
+        try:
+            text = LOCAL_ZONE_SOURCE.read_text(encoding="utf-8").strip()
+            if text:
+                return json.loads(text)
+        except Exception as e:
+            raise RuntimeError(f"Failed to read local polygons file: {e}")
         return {"zones": {}}
 
     def _build_indexes(self, raw: Any) -> None:
@@ -881,11 +786,9 @@ class DataStore:
         for item in raw:
             if not isinstance(item, list) or len(item) < 4:
                 continue
-
             threat = item[1]
             if threat not in DEFAULT_THREAT_TYPES:
                 continue
-
             cities = item[2]
             ts = item[3]
             if not isinstance(cities, list) or not isinstance(ts, int):
@@ -1030,115 +933,6 @@ def daterange_days(start: str, end: str) -> list[str]:
     return days
 
 
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    )
-    return 2 * r * math.asin(math.sqrt(a))
-
-
-def destination_point(lat: float, lon: float, bearing_deg: float, distance_km: float) -> tuple[float, float]:
-    r = 6371.0
-    brng = math.radians(bearing_deg)
-    lat1 = math.radians(lat)
-    lon1 = math.radians(lon)
-    ang = distance_km / r
-
-    lat2 = math.asin(math.sin(lat1) * math.cos(ang) + math.cos(lat1) * math.sin(ang) * math.cos(brng))
-    lon2 = lon1 + math.atan2(
-        math.sin(brng) * math.sin(ang) * math.cos(lat1),
-        math.cos(ang) - math.sin(lat1) * math.sin(lat2),
-    )
-    return math.degrees(lat2), math.degrees(lon2)
-
-
-def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    dlon = math.radians(lon2 - lon1)
-    y = math.sin(dlon) * math.cos(math.radians(lat2))
-    x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dlon)
-    return (math.degrees(math.atan2(y, x)) + 360) % 360
-
-
-def build_cone(lat: float, lon: float, bearing: float, distance_km: float, spread_deg: float = 12.0) -> list[list[float]]:
-    points: list[list[float]] = [[lat, lon]]
-    for delta in (-spread_deg, -spread_deg / 2, 0, spread_deg / 2, spread_deg):
-        p = destination_point(lat, lon, bearing + delta, distance_km)
-        points.append([p[0], p[1]])
-    return points
-
-
-def city_coord(city: str) -> tuple[float, float] | None:
-    return store.zone_centroids.get(city) or CITY_COORDS.get(city)
-
-
-def zones_for_recent_events(city: str, limit: int = 12) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for event in reversed(store.events):
-        if city not in event.cities:
-            continue
-        for zone_name in event.cities:
-            if zone_name in seen:
-                continue
-            zone = store.zones.get(zone_name)
-            if not zone or not zone.get("polygon"):
-                continue
-            rows.append({"name": zone_name, "countdown": zone.get("countdown"), "polygon": zone.get("polygon")})
-            seen.add(zone_name)
-        if len(rows) >= limit:
-            break
-    return rows
-
-
-def build_city_prediction(city: str) -> dict[str, Any] | None:
-    target = city_coord(city)
-    if not target:
-        return None
-
-    target_zone = store.zones.get(city)
-    target_polygon = target_zone.get("polygon") if target_zone else []
-
-    if city in {"קריית שמונה", "מטולה", "נהריה"}:
-        source_name = "דרום לבנון"
-        source = (33.45, 35.35)
-        speed_kmh = 180.0
-    elif city in {"אשקלון", "אשדוד", "שדרות", "נתיבות", "אופקים", "באר שבע", "עוטף עזה"}:
-        source_name = "צפון עזה"
-        source = (31.50, 34.45)
-        speed_kmh = 220.0
-    elif city in {"חולון", "בת ים", "ראשון לציון", "ירושלים", "חיפה", "גוש דן", "תל אביב - מרכז העיר", "תל אביב - עבר הירקון", "מרכז הנגב"}:
-        source_name = "איראן"
-        source = (32.10, 39.50)
-        speed_kmh = 700.0
-    else:
-        source_name = "כיוון מזרחי משוער"
-        source = (target[0] + 0.10, target[1] + 4.20)
-        speed_kmh = 650.0
-
-    distance = max(haversine_km(source[0], source[1], target[0], target[1]), 5.0)
-    flight_minutes = max(0.5, distance / speed_kmh * 60.0)
-    brng = bearing_deg(source[0], source[1], target[0], target[1])
-    impact = destination_point(source[0], source[1], brng, distance)
-    cone = build_cone(source[0], source[1], brng, distance * 1.05, spread_deg=10.0)
-
-    return {
-        "source_city": source_name,
-        "target_city": city,
-        "distance_km": round(distance, 1),
-        "flight_time_minutes": round(flight_minutes, 1),
-        "flight_time_human": f"{round(flight_minutes, 1)} דקות",
-        "path": [[source[0], source[1]], [impact[0], impact[1]]],
-        "impact": [impact[0], impact[1]],
-        "cone": cone,
-        "target_polygon": target_polygon,
-        "reason": "אומדן ניסיוני עם שכבת אזורי התרעה אמיתיים. המסלול והאזור הסגול אינם נתונים רשמיים.",
-    }
-
-
 @app.get("/")
 def index() -> Response:
     store.ensure_loaded()
@@ -1180,15 +974,13 @@ def api_city_stats():
         return jsonify({"error": f"city not found: {city}"}), 404
 
     start = request.args.get("from") or store.min_date
-    end = request.args.get("to") or store.max_date
+    end = request.args.get("to") or datetime.now(TZ).strftime("%Y-%m-%d")
     if not start or not end:
         return jsonify({"error": "date range unavailable"}), 400
     if start > end:
         return jsonify({"error": "from must be <= to"}), 400
 
     daily_counter = store.city_daily[city]
-    weekly_counter = store.city_weekly[city]
-    monthly_counter = store.city_monthly[city]
     hourly_counter = store.city_hourly.get(city, Counter())
     weekday_hourly = store.city_weekday_hourly.get(city, {})
 
@@ -1196,7 +988,6 @@ def api_city_stats():
     total_in_range = sum(row["count"] for row in daily_rows)
 
     today_real = datetime.now(TZ).strftime("%Y-%m-%d")
-    today_date = today_real
     last_7_start = (datetime.strptime(today_real, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
     last_30_start = (datetime.strptime(today_real, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
 
@@ -1241,32 +1032,18 @@ def api_city_stats():
         "reason": f"השעה {best_recent_hour['hour']} בולטת סטטיסטית עבור {city}. זה אינו חיזוי אמיתי אלא סיכום דפוסים מהעבר.",
     }
 
-    best_week = None
-    if weekly_counter:
-        k, v = max(weekly_counter.items(), key=lambda x: (x[1], x[0]))
-        best_week = {"period": k, "count": v}
-
-    best_month = None
-    if monthly_counter:
-        k, v = max(monthly_counter.items(), key=lambda x: (x[1], x[0]))
-        best_month = {"period": k, "count": v}
-
     return jsonify({
         "city": city,
         "daily": daily_rows,
         "hourly_distribution": hourly_distribution,
         "top_hours": top_hours,
         "recent_events": recent_events,
-        "recent_zone_polygons": zones_for_recent_events(city, limit=12),
-        "prediction_map": build_city_prediction(city),
         "summary": {
             "today": today_val,
-            "today_date": today_date,
+            "today_date": today_real,
             "last_7_days": week_val,
             "last_30_days": month_val,
             "total_in_range": total_in_range,
-            "best_week": best_week,
-            "best_month": best_month,
             "best_recent_hour": best_recent_hour,
             "prediction": prediction_summary,
         },
