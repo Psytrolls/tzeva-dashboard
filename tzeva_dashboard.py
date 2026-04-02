@@ -18,6 +18,7 @@ app = Flask(__name__)
 TZ = ZoneInfo("Asia/Jerusalem")
 
 DATA_URL = "https://www.tzevaadom.co.il/static/historical/all.json"
+SNAPSHOT_URL = "https://iwm.diskin.net/api/snapshot"
 LOCAL_ZONE_SOURCE = Path("alert-zones-local.json")
 
 CACHE_DIR = Path("cache")
@@ -25,8 +26,9 @@ CACHE_DIR.mkdir(exist_ok=True)
 DATA_FILE = CACHE_DIR / "all.json"
 META_FILE = CACHE_DIR / "meta.json"
 
-REFRESH_SECONDS = 7
+REFRESH_SECONDS = 600
 STREAM_POLL_SECONDS = 1
+LIVE_REFRESH_SECONDS = 2
 DEFAULT_THREAT_TYPES = {0}
 ZONE_NAME_ALIASES = {
     "תל אביב מרכז העיר": "תל אביב - מרכז העיר",
@@ -1042,6 +1044,11 @@ function connectLiveStream() {
         return;
       }
 
+      if (payload.type === 'all_clear') {
+        setText('liveStatus', `🟢 חזרה לשגרה · ${payload.datetime}`);
+        return;
+      }
+
       handleLiveCountryEvent(payload);
 
       const selectedCity = document.getElementById('citySelect').value.trim();
@@ -1124,6 +1131,9 @@ class DataStore:
         self.max_date: str | None = None
         self.zones: dict[str, dict[str, Any]] = {}
         self.zone_centroids: dict[str, tuple[float, float]] = {}
+        self.live_alerts: list[dict[str, Any]] = []
+        self.live_seen_ids: set[str] = set()
+        self.last_live_refresh = 0.0
 
     def ensure_loaded(self, force: bool = False) -> None:
         now = time.time()
@@ -1172,6 +1182,103 @@ class DataStore:
     def _load_local_zones(self) -> dict[str, Any]:
         if not LOCAL_ZONE_SOURCE.exists():
             return {"zones": {}}
+        try:
+            text = LOCAL_ZONE_SOURCE.read_text(encoding="utf-8").strip()
+            if text:
+                return json.loads(text)
+        except Exception as e:
+            raise RuntimeError(f"Failed to read local polygons file: {e}")
+        return {"zones": {}}
+
+    def refresh_live_snapshot(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self.last_live_refresh) < LIVE_REFRESH_SECONDS:
+            return
+
+        req = Request(
+            SNAPSHOT_URL,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json, text/plain, */*",
+            },
+        )
+
+        try:
+            with urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8").strip()
+            if not raw:
+                self.live_alerts = []
+                self.last_live_refresh = now
+                return
+
+            data = json.loads(raw)
+            alerts = self._extract_live_alerts_from_snapshot(data)
+            self.live_alerts = alerts
+            self.last_live_refresh = now
+        except Exception as e:
+            print("snapshot refresh error:", e)
+            self.last_live_refresh = now
+
+    def _extract_live_alerts_from_snapshot(self, data: Any) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+
+        def walk(node: Any) -> None:
+            if isinstance(node, dict):
+                props = node.get("properties")
+                if isinstance(props, dict):
+                    source = props.get("source")
+                    alert_state = props.get("alertState")
+                    external_id = props.get("externalId")
+                    city_he = props.get("cityHebrew")
+                    alert_type = props.get("alertType")
+                    severity = props.get("severity")
+                    is_official = props.get("isOfficial", False)
+
+                    if (
+                        source == "pikud_haoref_telegram"
+                        and alert_state == "active"
+                        and is_official
+                        and external_id
+                        and city_he
+                    ):
+                        target_areas = []
+                        missile_track = props.get("missileTrack")
+                        if isinstance(missile_track, dict):
+                            ta = missile_track.get("targetAreas")
+                            if isinstance(ta, list):
+                                target_areas = [str(x) for x in ta if str(x).strip()]
+
+                        created_at = (
+                            props.get("createdAt")
+                            or props.get("updatedAt")
+                            or props.get("publishedAt")
+                            or props.get("detectedAt")
+                        )
+
+                        city_name = str(city_he).strip()
+                        results.append({
+                            "external_id": str(external_id),
+                            "city": city_name,
+                            "cities": [city_name],
+                            "alert_type": alert_type,
+                            "severity": severity,
+                            "source": source,
+                            "target_areas": target_areas,
+                            "created_at": created_at,
+                        })
+
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(data)
+
+        dedup: dict[str, dict[str, Any]] = {}
+        for item in results:
+            dedup[item["external_id"]] = item
+        return list(dedup.values())
         try:
             text = LOCAL_ZONE_SOURCE.read_text(encoding="utf-8").strip()
             if text:
@@ -1464,27 +1571,50 @@ def api_city_stats():
 def api_stream() -> Response:
     @stream_with_context
     def generate():
-        store.ensure_loaded()
-        # מתחילים מהאירוע האחרון הקיים כדי לא לנגן את כל ההיסטוריה מחדש
-        last_seen = store.events[-1].ts if store.events else 0
+        sent_ids: set[str] = set()
 
         while True:
             store.ensure_loaded()
-            latest_ts = store.events[-1].ts if store.events else 0
+            store.refresh_live_snapshot()
 
-            if latest_ts > last_seen:
-                for event in store.events:
-                    if event.ts <= last_seen:
-                        continue
-                    payload = {
-                        "type": "alert",
-                        "ts": event.ts,
-                        "cities": event.cities,
-                        "datetime": datetime.fromtimestamp(event.ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                    yield f"data: {json.dumps(payload, ensure_ascii=False)}"
-                    last_seen = event.ts
-            else:
+            current_ids: set[str] = set()
+
+            for item in store.live_alerts:
+                external_id = item["external_id"]
+                current_ids.add(external_id)
+
+                if external_id in sent_ids:
+                    continue
+
+                created_at = item.get("created_at")
+                dt_text = created_at if created_at else datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+                payload = {
+                    "type": "alert",
+                    "ts": int(time.time()),
+                    "cities": item["cities"],
+                    "datetime": dt_text,
+                    "external_id": external_id,
+                    "alert_type": item.get("alert_type"),
+                    "severity": item.get("severity"),
+                    "source": item.get("source"),
+                    "target_areas": item.get("target_areas", []),
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}"
+                sent_ids.add(external_id)
+
+            removed_ids = sent_ids - current_ids
+            for removed_id in removed_ids:
+                payload = {
+                    "type": "all_clear",
+                    "external_id": removed_id,
+                    "datetime": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}"
+
+            sent_ids = current_ids.copy()
+
+            if not current_ids:
                 heartbeat = {
                     "type": "heartbeat",
                     "server_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
