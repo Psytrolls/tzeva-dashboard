@@ -165,15 +165,14 @@ HTML = r'''<!doctype html>
     .pill { padding:7px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); }
     .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-left:6px; }
     .dot.red { background:#ff5c5c; }
-    .dot.yellow { background:#f97316; } /* Изменил желтый на оранжевый в легенде для дронов */
-    .dot.purple { background:#b56cff; }
+    .dot.yellow { background:#f97316; } 
+    .dot.light-yellow { background:#fef08a; } /* Цвет для пред-тревоги */
     .dot.green { background:#3ddc97; }
     @media (max-width:1150px) {
       .grid { grid-template-columns:1fr; }
       .controls, .stats { grid-template-columns:1fr; }
       #map { height:420px; }
     }
-    /* Анимация пульсации для метки дрона */
     @keyframes dronePulse {
       0% { transform: scale(0.9); opacity: 0.7; }
       50% { transform: scale(1.3); opacity: 0.3; }
@@ -233,9 +232,10 @@ HTML = r'''<!doctype html>
           </div>
           <div id="map"></div>
           <div class="legend">
-            <div class="pill"><span class="dot red"></span>ירי טילים (קטגוריה 1)</div>
-            <div class="pill"><span class="dot yellow"></span>כלי טיס עוין (קטגוריה 2)</div>
-            <div class="pill"><span class="dot green"></span>שידור חי מחובר</div>
+            <div class="pill"><span class="dot red"></span>ירי טילים</div>
+            <div class="pill"><span class="dot yellow"></span>כלי טיס עוין</div>
+            <div class="pill"><span class="dot light-yellow"></span>התרעה מקדימה</div>
+            <div class="pill"><span class="dot green"></span>מחובר</div>
           </div>
         </div>
 
@@ -289,15 +289,14 @@ let map = null;
 let stream = null;
 let liveCountryLayer = null;
 
-let activeAlertsMap = {}; 
+let activeAlertsMap = {}; // Слои на карте
+let activeCategoryMap = {}; // Текущая категория для города (1, 2 или 3)
 let processedEventKeys = new Set(); 
 let activeAnimations = [];
 
 let zoneIndex = {};
 let zoneCentroids = {};
 let hasFittedMap = false;
-
-// Флаг для пропуска анимаций старых сирен при загрузке/рефреше
 let isInitialStreamLoad = true;
 
 const fallbackCityCoords = {
@@ -377,13 +376,20 @@ function initCountryMapView() {
 
 function updateMapCaption() {
     const count = Object.keys(activeAlertsMap).length;
-    setText('mapCaption', `לייב ארצי · איומים פעילים כרגע: ${count}`);
+    setText('mapCaption', `לייב ארצי · אזורים במעקב: ${count}`);
 }
 
 function clearLiveLayers() {
   if (!liveCountryLayer) return;
   liveCountryLayer.clearLayers();
+  
+  // Очищаем интервалы пульсации
+  Object.values(activeAlertsMap).forEach(layer => {
+      if (layer._pulseInterval) clearInterval(layer._pulseInterval);
+  });
+  
   activeAlertsMap = {};
+  activeCategoryMap = {};
   processedEventKeys.clear();
   clearActiveAnimations();
   updateMapCaption();
@@ -399,6 +405,8 @@ function clearActiveAnimations() {
 
 function fadeAndRemoveLayer(layer, durationMs = 1800, targetOpacity = 0) {
   if (!layer) return;
+  if (layer._pulseInterval) clearInterval(layer._pulseInterval); // Останавливаем пульсацию
+  
   const started = performance.now();
   const initialOpacity = typeof layer.options?.opacity === 'number' ? layer.options.opacity : 1;
   const initialFillOpacity = typeof layer.options?.fillOpacity === 'number' ? layer.options.fillOpacity : initialOpacity;
@@ -455,21 +463,20 @@ function detectEstimatedOrigin(zoneName, zone) {
 }
 
 function animationDurationByOrigin(origin) {
-  if (origin === 'iran') return 270000; // 4.5 минуты (270 сек)
-  if (origin === 'lebanon') return 30000; // 30 секунд
-  if (origin === 'gaza') return 45000; // 45 секунд
-  return 30000; // По умолчанию 30 сек
+  if (origin === 'iran') return 50000; // По просьбе бро: 50 секунд для Ирана!
+  if (origin === 'lebanon') return 30000; 
+  if (origin === 'gaza') return 45000; 
+  return 30000; 
 }
 
 function originStyle(origin, isDrone = false) {
-  // ОРАНЖЕВЫЙ ЦВЕТ ДЛЯ ДРОНОВ
   if (isDrone) {
     return {
-      rocketStroke: '#ea580c', // Orange-600
-      rocketFill: '#f97316',   // Orange-500
-      trail: '#fdba74',        // Orange-300
+      rocketStroke: '#ea580c', 
+      rocketFill: '#f97316',   
+      trail: '#fdba74',        
       blastStroke: '#ea580c',
-      blastFill: '#c2410c',    // Orange-700
+      blastFill: '#c2410c',    
       label: 'כלי טיס עוין (UAV)'
     };
   }
@@ -529,13 +536,11 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
   let duration = 0;
 
   if (isDrone) {
-    // Для дрона стартовая точка где-то рядом на карте (случайное расстояние и угол)
     const angle = Math.random() * Math.PI * 2;
-    const dist = 0.3 + Math.random() * 0.3; // Примерно 30-50км от цели
+    const dist = 0.3 + Math.random() * 0.3; 
     start = [target[0] + Math.sin(angle) * dist, target[1] + Math.cos(angle) * dist];
-    duration = 45000; // 45 секунд
+    duration = 45000; 
   } else {
-    // Обычная логика ракет
     if (origin === 'iran') {
       start = [32.1, 39.5];
     } else if (origin === 'lebanon') {
@@ -606,7 +611,6 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     let lat, lon;
 
     if (isDrone) {
-      // Имитация блуждающего полета для дрона
       const baseLat = start[0] + (target[0] - start[0]) * progress;
       const baseLon = start[1] + (target[1] - start[1]) * progress;
       const amplitude = 0.08 * (1 - progress); 
@@ -658,28 +662,40 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
 }
 
 
-function pulsePolygonCustom(layer, category) {
-  const isDrone = category === 2;
-  const started = Date.now();
-  let on = false;
-  
-  const timer = setInterval(() => {
-    if (!map.hasLayer(layer)) {
-      clearInterval(timer);
-      return;
-    }
+function applyPolygonStyle(layer, category) {
+  if (layer._pulseInterval) clearInterval(layer._pulseInterval); // Убиваем старую пульсацию, если была
+
+  if (category === 3) {
+    // ПРЕДВАРИТЕЛЬНАЯ ТРЕВОГА - Светло-желтое мягкое мигание
+    let on = false;
+    layer.setStyle({ color: '#facc15', weight: 2, fillColor: '#fef08a', fillOpacity: 0.2 });
     
-    on = !on;
-    try {
-      // Оранжевая пульсация для дрона, красная для ракет
-      layer.setStyle({
-        color: on ? (isDrone ? '#f97316' : '#ff4d4d') : (isDrone ? '#ea580c' : '#dc2626'),
-        weight: on ? 3 : 2,
-        fillColor: on ? (isDrone ? '#fb923c' : '#ff7d7d') : (isDrone ? '#f97316' : '#ff4d4d'),
-        fillOpacity: on ? 0.35 : 0.15,
-      });
-    } catch (e) {}
-  }, 600);
+    layer._pulseInterval = setInterval(() => {
+      if (!map.hasLayer(layer)) { clearInterval(layer._pulseInterval); return; }
+      on = !on;
+      try {
+        layer.setStyle({ fillOpacity: on ? 0.3 : 0.1 });
+      } catch (e) {}
+    }, 800);
+    
+  } else {
+    // БОЕВАЯ ТРЕВОГА - Агрессивная красно/оранжевая пульсация
+    const isDrone = category === 2;
+    let on = false;
+    
+    layer._pulseInterval = setInterval(() => {
+      if (!map.hasLayer(layer)) { clearInterval(layer._pulseInterval); return; }
+      on = !on;
+      try {
+        layer.setStyle({
+          color: on ? (isDrone ? '#f97316' : '#ff4d4d') : (isDrone ? '#ea580c' : '#dc2626'),
+          weight: on ? 3 : 2,
+          fillColor: on ? (isDrone ? '#fb923c' : '#ff7d7d') : (isDrone ? '#f97316' : '#ff4d4d'),
+          fillOpacity: on ? 0.35 : 0.15,
+        });
+      } catch (e) {}
+    }, 600);
+  }
 }
 
 
@@ -699,72 +715,70 @@ function processNewFeedEvents(eventsArray, skipAnimations = false) {
       if (activeAlertsMap[city]) {
         fadeAndRemoveLayer(activeAlertsMap[city], 1000, 0);
         delete activeAlertsMap[city];
+        delete activeCategoryMap[city];
       }
       return;
     }
 
-    if (category === 1 || category === 2) {
-      if (activeAlertsMap[city]) return;
+    if (category === 1 || category === 2 || category === 3) {
+      const existingLayer = activeAlertsMap[city];
+      const existingCategory = activeCategoryMap[city];
+
+      // Если это пред-тревога (3), а у нас УЖЕ есть реальная (1 или 2) — игнорим
+      if (category === 3 && (existingCategory === 1 || existingCategory === 2)) return;
+      
+      // Если это такая же категория, которая уже горит — игнорим
+      if (existingLayer && existingCategory === category) return;
 
       const zone = zoneIndex[city];
       let targetCoords = null;
-      let createdLayer = null;
+      let layerToUse = existingLayer;
 
-      if (zone && zone.polygon && zone.polygon.length > 0) {
-        targetCoords = polygonCenter(zone.polygon);
-        const isDrone = category === 2;
-        const baseColor = isDrone ? '#f97316' : '#ff4d4d'; // Оранжевый или красный
-
-        const polygon = L.polygon(zone.polygon, {
-          color: baseColor,
-          weight: 2,
-          fillColor: baseColor,
-          fillOpacity: 0.15,
-        }).bindPopup(`
-          <b>${city}</b><br>
-          <span style="color:${baseColor}; font-weight:bold;">${title}</span><br>
-          זמן מיגון: ${zone.countdown || '—'} שנ׳
-        `);
-        
-        polygon.addTo(liveCountryLayer);
-        pulsePolygonCustom(polygon, category);
-        createdLayer = polygon;
-
+      // Если слоя еще нет на карте - создаем его
+      if (!layerToUse) {
+        if (zone && zone.polygon && zone.polygon.length > 0) {
+          targetCoords = polygonCenter(zone.polygon);
+          layerToUse = L.polygon(zone.polygon, { weight: 2 }).bindPopup(`
+            <b>${city}</b><br>
+            <span style="font-weight:bold;">${title}</span><br>
+            זמן מיגון: ${zone.countdown || '—'} שנ׳
+          `).addTo(liveCountryLayer);
+        } else {
+          targetCoords = zoneCentroids[city] || fallbackCityCoords[city] || (ev.lat && ev.lng ? [ev.lat, ev.lng] : null);
+          if (targetCoords) {
+            layerToUse = L.circleMarker(targetCoords, { radius: 8, weight: 2 }).bindPopup(`<b>${city}</b><br>${title}`).addTo(liveCountryLayer);
+          }
+        }
       } else {
-        targetCoords = zoneCentroids[city] || fallbackCityCoords[city] || (ev.lat && ev.lng ? [ev.lat, ev.lng] : null);
-        
-        if (targetCoords) {
-          const isDrone = category === 2;
-          const mColor = isDrone ? '#f97316' : '#ff2d55'; // Оранжевый или красный
-          const marker = L.circleMarker(targetCoords, {
-            radius: 8,
-            color: mColor,
-            weight: 2,
-            fillColor: mColor,
-            fillOpacity: 0.9,
-          }).bindPopup(`<b>${city}</b><br>${title}`);
-          
-          marker.addTo(liveCountryLayer);
-          createdLayer = marker;
+        // Слой уже есть (скорее всего был желтым как категория 3), берем его координаты для ракеты
+        if (zone && zone.polygon && zone.polygon.length > 0) {
+            targetCoords = polygonCenter(zone.polygon);
+        } else {
+            targetCoords = zoneCentroids[city] || fallbackCityCoords[city] || (ev.lat && ev.lng ? [ev.lat, ev.lng] : null);
         }
       }
 
-      if (createdLayer && targetCoords) {
-        activeAlertsMap[city] = createdLayer;
+      if (layerToUse && targetCoords) {
+        activeAlertsMap[city] = layerToUse;
+        activeCategoryMap[city] = category;
         
-        // ЕСЛИ ЭТО НЕ ПЕРВАЯ ЗАГРУЗКА (РЕФРЕШ), ТО РИСУЕМ ПОЛЕТ
-        if (!skipAnimations) {
+        // Применяем стиль (желтый для 3, красный/оранжевый пульс для 1 и 2)
+        applyPolygonStyle(layerToUse, category);
+        
+        // ЕСЛИ ЭТО РЕАЛЬНАЯ ТРЕВОГА И МЫ НЕ ПРОПУСКАЕМ АНИМАЦИИ - ЗАПУСКАЕМ РАКЕТУ
+        if ((category === 1 || category === 2) && !skipAnimations) {
             animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0, category);
         }
 
-        // Увеличили время удержания маркера, чтобы ракета успела долететь (особенно из Ирана)
+        // Таймер авто-удаления
         setTimeout(() => {
-          if (activeAlertsMap[city] === createdLayer) {
-            fadeAndRemoveLayer(createdLayer, 1800, 0);
+          if (activeAlertsMap[city] === layerToUse) {
+            fadeAndRemoveLayer(layerToUse, 1800, 0);
             delete activeAlertsMap[city];
+            delete activeCategoryMap[city];
             updateMapCaption();
           }
-        }, 360000); // 6 минут (360 000 мс)
+        }, 360000); // 6 минут
       }
     }
   });
@@ -904,7 +918,6 @@ function renderSummary(data) {
   `);
 }
 
-// ОЧИСТКА КАРТЫ ПРИ ЗАГРУЗКЕ НОВЫХ СТАТОВ
 async function loadDashboard() {
   clearLiveLayers(); 
   let city = document.getElementById('citySelect').value.trim();
@@ -925,7 +938,7 @@ async function loadDashboard() {
 
 async function refreshBackend() {
   clearLiveLayers(); 
-  isInitialStreamLoad = true; // Сбрасываем флаг при принудительном рефреше
+  isInitialStreamLoad = true; 
   setText('datasetMeta', 'מרענן נתונים...');
   await getJson('/api/refresh', { method: 'POST' });
   await loadMeta();
@@ -958,11 +971,10 @@ function connectLiveStream() {
       }
 
       if (Array.isArray(payload)) {
-        // Передаем флаг пропуска анимаций (true при первой загрузке)
         processNewFeedEvents(payload, isInitialStreamLoad);
-        isInitialStreamLoad = false; // После первой загрузки снимаем флаг
+        isInitialStreamLoad = false; 
         
-        const activeAlerts = payload.filter(p => p.category === 1 || p.category === 2);
+        const activeAlerts = payload.filter(p => p.category === 1 || p.category === 2 || p.category === 3);
         if (activeAlerts.length > 0) {
             const latest = activeAlerts[activeAlerts.length - 1];
             setText('liveStatus', `🟢 אירוע לייב: ${latest.data} (${latest.title})`);
@@ -1139,24 +1151,23 @@ class DataStore:
                     title = props.get("title", "")
                     alert_date = event.get("time", "")
                     
-                    # 1. ОТСЕКАЕМ ПРЕДВАРИТЕЛЬНЫЕ (ФАНТОМЫ)
-                    if "Expected" in alert_type or "צפויות" in alert_type:
-                        continue
-
                     location = event.get("location")
                     lat, lng = None, None
                     if location and isinstance(location, dict):
                         lat = location.get("lat")
                         lng = location.get("lng")
                     
-                    # 2. ФИЛЬТР ГАЗЫ (Координаты Юга)
+                    # ФИЛЬТР ГАЗЫ
                     if lat is not None and lat < 31.65 and lng < 34.65:
                         continue
                     if "עוטף עזה" in title or "Gaza Envelope" in title:
                         continue
                     
+                    # ПРИСВОЕНИЕ КАТЕГОРИЙ (1=Ракета, 2=Дрон, 3=Пред-тревога, 13=Отбой)
                     if alert_state == "cleared" or "הסתיים" in title:
                         category = 13 
+                    elif "Expected" in alert_type or "צפויות" in alert_type:
+                        category = 3
                     elif "כלי טיס" in alert_type or "UAV" in alert_type:
                         category = 2  
                     else:
