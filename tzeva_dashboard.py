@@ -922,9 +922,23 @@ function renderHourlyChart(items) {
 
 async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
+
+  const minDate = datasetMeta?.min_date || '—';
+  const maxDate = datasetMeta?.max_date || todayLocalISO();
+  const refreshed = datasetMeta?.refreshed_at || '—';
+
   setText(
     'datasetMeta',
     `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · בסיס היסטורי: ${minDate} → ${maxDate} · עדכון היסטוריה: ${refreshed}`
+  );
+
+  if (!document.getElementById('toDate').value) {
+    document.getElementById('toDate').value = maxDate;
+  }
+  if (!document.getElementById('fromDate').value) {
+    document.getElementById('fromDate').value = shiftDays(maxDate, -29);
+  }
+} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · בסיס היסטורי: ${minDate} → ${maxDate} · עדכון היסטוריה: ${refreshed}`
   );
 
   const minDate = datasetMeta?.min_date || '—';
