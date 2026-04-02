@@ -31,7 +31,6 @@ ZONE_REFRESH_SECONDS = 3600
 STREAM_POLL_SECONDS = 3
 DEFAULT_THREAT_TYPES = {0}
 
-# Fallback coordinates for zones/cities that may not exist in alert-zones.json
 CITY_COORDS: dict[str, tuple[float, float]] = {
     "אשקלון": (31.6688, 34.5743),
     "אשדוד": (31.8014, 34.6435),
@@ -92,10 +91,6 @@ HTML = r'''<!doctype html>
       --line:#2b3b5c;
       --text:#eef3ff;
       --muted:#9db0d6;
-      --accent:#6fa0ff;
-      --danger:#ff6464;
-      --warn:#ffd166;
-      --ok:#3ddc97;
       --radius:20px;
       --shadow:0 10px 28px rgba(0,0,0,.3);
     }
@@ -106,11 +101,11 @@ HTML = r'''<!doctype html>
       background:linear-gradient(180deg,#09111d,#0d1526);
       color:var(--text);
     }
-    .wrap { max-width: 1550px; margin: 0 auto; padding: 20px; }
-    .grid { display:grid; grid-template-columns: 1.1fr .9fr; gap:20px; }
+    .wrap { max-width:1550px; margin:0 auto; padding:20px; }
+    .grid { display:grid; grid-template-columns:1.1fr .9fr; gap:20px; }
     .stack { display:grid; gap:20px; }
     .card {
-      background: rgba(19,27,43,.94);
+      background:rgba(19,27,43,.94);
       border:1px solid rgba(255,255,255,.08);
       border-radius:var(--radius);
       box-shadow:var(--shadow);
@@ -118,19 +113,19 @@ HTML = r'''<!doctype html>
       backdrop-filter: blur(10px);
     }
     .title { font-size:30px; font-weight:800; margin-bottom:10px; }
-    .sub { color:var(--muted); line-height:1.5; font-size:14px; }
+    .sub { color:#9db0d6; line-height:1.5; font-size:14px; }
     .controls {
       display:grid;
-      grid-template-columns: 1.4fr 1fr 1fr 1fr auto;
+      grid-template-columns:1.4fr 1fr 1fr 1fr auto;
       gap:12px;
       align-items:end;
     }
-    label { display:block; font-size:13px; color:var(--muted); margin-bottom:8px; }
+    label { display:block; font-size:13px; color:#9db0d6; margin-bottom:8px; }
     input, select, button {
       width:100%;
-      background:var(--panel2);
-      color:var(--text);
-      border:1px solid var(--line);
+      background:#182237;
+      color:#eef3ff;
+      border:1px solid #2b3b5c;
       border-radius:14px;
       padding:12px 14px;
       font-size:14px;
@@ -140,26 +135,26 @@ HTML = r'''<!doctype html>
     button { cursor:pointer; text-align:center; font-weight:700; }
     .btn-primary { background:linear-gradient(135deg,#4f7cff,#7aa2ff); border:none; }
     .btn-secondary { background:linear-gradient(135deg,#31405f,#233250); }
-    .stats { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; }
+    .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; }
     .stat {
       background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
       border:1px solid rgba(255,255,255,.08);
       border-radius:18px;
       padding:16px;
     }
-    .stat .k { color:var(--muted); font-size:12px; margin-bottom:8px; }
+    .stat .k { color:#9db0d6; font-size:12px; margin-bottom:8px; }
     .stat .v { font-size:30px; font-weight:800; }
-    .stat .s { margin-top:8px; font-size:12px; color:var(--muted); }
+    .stat .s { margin-top:8px; font-size:12px; color:#9db0d6; }
     .section-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; }
-    .small { font-size:12px; color:var(--muted); }
-    #map { height: 520px; border-radius: 18px; overflow: hidden; border:1px solid rgba(255,255,255,.08); }
+    .small { font-size:12px; color:#9db0d6; }
+    #map { height:520px; border-radius:18px; overflow:hidden; border:1px solid rgba(255,255,255,.08); }
     .list { display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; }
     .row {
       display:flex; justify-content:space-between; gap:10px; align-items:center;
       padding:14px; border-radius:16px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06);
     }
     .row .name { font-weight:700; }
-    .row .meta { font-size:12px; color:var(--muted); margin-top:4px; }
+    .row .meta { font-size:12px; color:#9db0d6; margin-top:4px; }
     .badge { padding:8px 10px; border-radius:999px; background:rgba(111,160,255,.16); color:#c8d8ff; font-size:12px; white-space:nowrap; }
     .legend { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
     .pill { padding:7px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); }
@@ -168,10 +163,10 @@ HTML = r'''<!doctype html>
     .dot.yellow { background:#ffd166; }
     .dot.purple { background:#b56cff; }
     .dot.green { background:#3ddc97; }
-    @media (max-width: 1150px) {
-      .grid { grid-template-columns: 1fr; }
-      .controls, .stats { grid-template-columns: 1fr; }
-      #map { height: 420px; }
+    @media (max-width:1150px) {
+      .grid { grid-template-columns:1fr; }
+      .controls, .stats { grid-template-columns:1fr; }
+      #map { height:420px; }
     }
   </style>
 </head>
@@ -248,26 +243,10 @@ HTML = r'''<!doctype html>
         <div class="card">
           <h3 style="margin-bottom:14px;">סיכום</h3>
           <div class="stats">
-            <div class="stat">
-              <div class="k">היום האחרון בבסיס</div>
-              <div class="v" id="statToday">—</div>
-              <div class="s" id="statTodaySub">—</div>
-            </div>
-            <div class="stat">
-              <div class="k">7 ימים אחרונים</div>
-              <div class="v" id="statWeek">—</div>
-              <div class="s" id="statWeekSub">—</div>
-            </div>
-            <div class="stat">
-              <div class="k">30 ימים אחרונים</div>
-              <div class="v" id="statMonth">—</div>
-              <div class="s" id="statMonthSub">—</div>
-            </div>
-            <div class="stat">
-              <div class="k">סה״כ בטווח</div>
-              <div class="v" id="statTotal">—</div>
-              <div class="s" id="statTotalSub">—</div>
-            </div>
+            <div class="stat"><div class="k">היום האחרון בבסיס</div><div class="v" id="statToday">—</div><div class="s" id="statTodaySub">—</div></div>
+            <div class="stat"><div class="k">7 ימים אחרונים</div><div class="v" id="statWeek">—</div><div class="s" id="statWeekSub">—</div></div>
+            <div class="stat"><div class="k">30 ימים אחרונים</div><div class="v" id="statMonth">—</div><div class="s" id="statMonthSub">—</div></div>
+            <div class="stat"><div class="k">סה״כ בטווח</div><div class="v" id="statTotal">—</div><div class="s" id="statTotalSub">—</div></div>
           </div>
         </div>
 
@@ -300,10 +279,8 @@ let hourlyChart = null;
 let map = null;
 let mapLayer = null;
 let stream = null;
-let lastRenderedSignature = '';
 let liveCountryLayer = null;
 let liveCountryMarkers = [];
-let liveZonePolygons = new Map();
 let zoneIndex = {};
 let zoneCentroids = {};
 
@@ -315,6 +292,7 @@ function shiftDays(dateStr, days) {
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
 }
+
 async function getJson(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
@@ -333,6 +311,7 @@ function ensureMap() {
   }).addTo(map);
   mapLayer = L.layerGroup().addTo(map);
   liveCountryLayer = L.layerGroup().addTo(map);
+  setTimeout(() => map.invalidateSize(), 300);
 }
 
 function renderMap(data) {
@@ -364,7 +343,7 @@ function renderMap(data) {
       fillColor: '#ff4d4d',
       fillOpacity: 0.75,
     }).bindPopup(`<b>${p.city}</b><br>${p.datetime}`).addTo(mapLayer);
-      bounds.push([p.lat, p.lon]);
+    bounds.push([p.lat, p.lon]);
   }
 
   if (prediction?.target_polygon?.length) {
@@ -448,7 +427,6 @@ function flashZone(zoneName, label) {
     fillOpacity: 0.28,
   }).bindPopup(`<b>${zoneName}</b><br>${label}`);
   poly.addTo(liveCountryLayer);
-  liveZonePolygons.set(zoneName + '|' + Date.now(), poly);
 
   setTimeout(() => {
     try { liveCountryLayer.removeLayer(poly); } catch (e) {}
@@ -520,15 +498,7 @@ function renderHourlyChart(items) {
 async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
   setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
-  if (datasetMeta.max_date) {
-    if (!document.getElementById('toDate').value) {
-      document.getElementById('toDate').value = datasetMeta.max_date;
-    }
-    if (!document.getElementById('fromDate').value) {
-      document.getElementById('fromDate').value = shiftDays(datasetMeta.max_date, -29);
-    }
-  }
-} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
+
   if (datasetMeta.max_date) {
     if (!document.getElementById('toDate').value) {
       document.getElementById('toDate').value = datasetMeta.max_date;
@@ -622,7 +592,6 @@ async function loadDashboard() {
   const params = new URLSearchParams({ city, from, to });
   const data = await getJson(`/api/city-stats?${params.toString()}`);
   renderSummary(data);
-  lastRenderedSignature = `${city}|${from}|${to}`;
 }
 
 async function refreshBackend() {
@@ -651,6 +620,7 @@ function connectLiveStream() {
   stream.onmessage = async (event) => {
     try {
       const payload = JSON.parse(event.data);
+
       if (payload.type === 'heartbeat') {
         setText('liveStatus', `🟢 שידור חי מחובר · פעימה אחרונה: ${payload.server_time}`);
         return;
@@ -670,37 +640,6 @@ function connectLiveStream() {
       console.error('stream message error', err);
     }
   };
-} catch (e) {}
-  }
-
-  stream = new EventSource('/api/stream');
-
-  stream.onopen = () => {
-    setText('liveStatus', '🟢 שידור חי מחובר');
-  };
-
-  stream.onerror = () => {
-    setText('liveStatus', '🟠 בעיית חיבור לשידור חי, מנסה להתחבר מחדש...');
-  };
-
-  stream.onmessage = async (event) => {
-    try {
-      const payload = JSON.parse(event.data);
-      if (payload.type === 'heartbeat') {
-        setText('liveStatus', `🟢 שידור חי מחובר · פעימה אחרונה: ${payload.server_time}`);
-        return;
-      }
-
-      const selectedCity = document.getElementById('citySelect').value.trim();
-      if (payload.cities && payload.cities.includes(selectedCity)) {
-        setText('liveStatus', `🟢 התקבל אירוע חדש עבור ${selectedCity} · ${payload.datetime}`);
-        await loadMeta();
-        await loadDashboard();
-      }
-    } catch (err) {
-      console.error('stream message error', err);
-    }
-  };
 }
 
 async function bootstrap() {
@@ -714,9 +653,10 @@ async function bootstrap() {
 
   document.getElementById('applyBtn').addEventListener('click', loadDashboard);
   document.getElementById('refreshBtn').addEventListener('click', refreshBackend);
-  document.getElementById('preset').addEventListener('change', () => { applyPreset(); loadDashboard(); });
-  document.getElementById('citySelect').addEventListener('change', loadDashboard);
-});
+  document.getElementById('preset').addEventListener('change', () => {
+    applyPreset();
+    loadDashboard();
+  });
   document.getElementById('citySelect').addEventListener('change', loadDashboard);
 }
 
@@ -794,11 +734,7 @@ class DataStore:
 
         DATA_FILE.write_bytes(raw_bytes)
         META_FILE.write_text(
-            json.dumps(
-                {"refreshed_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")},
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps({"refreshed_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return json.loads(raw_bytes.decode("utf-8"))
@@ -869,18 +805,7 @@ class DataStore:
             hour = f"{dt.hour:02d}:00"
             weekday = str(dt.weekday())
 
-            events.append(
-                EventRecord(
-                    ts=ts,
-                    date=date,
-                    week=week,
-                    month=month,
-                    hour=hour,
-                    weekday=weekday,
-                    cities=cities_clean,
-                    threat=threat,
-                )
-            )
+            events.append(EventRecord(ts=ts, date=date, week=week, month=month, hour=hour, weekday=weekday, cities=cities_clean, threat=threat))
 
             if min_date is None or date < min_date:
                 min_date = date
@@ -1001,10 +926,7 @@ def destination_point(lat: float, lon: float, bearing_deg: float, distance_km: f
     lon1 = math.radians(lon)
     ang = distance_km / r
 
-    lat2 = math.asin(
-        math.sin(lat1) * math.cos(ang)
-        + math.cos(lat1) * math.sin(ang) * math.cos(brng)
-    )
+    lat2 = math.asin(math.sin(lat1) * math.cos(ang) + math.cos(lat1) * math.sin(ang) * math.cos(brng))
     lon2 = lon1 + math.atan2(
         math.sin(brng) * math.sin(ang) * math.cos(lat1),
         math.cos(ang) - math.sin(lat1) * math.sin(lat2),
@@ -1015,10 +937,7 @@ def destination_point(lat: float, lon: float, bearing_deg: float, distance_km: f
 def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlon = math.radians(lon2 - lon1)
     y = math.sin(dlon) * math.cos(math.radians(lat2))
-    x = (
-        math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
-        - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dlon)
-    )
+    x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dlon)
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
@@ -1066,11 +985,7 @@ def zones_for_recent_events(city: str, limit: int = 12) -> list[dict[str, Any]]:
             zone = store.zones.get(zone_name)
             if not zone or not zone.get("polygon"):
                 continue
-            rows.append({
-                "name": zone_name,
-                "countdown": zone.get("countdown"),
-                "polygon": zone.get("polygon"),
-            })
+            rows.append({"name": zone_name, "countdown": zone.get("countdown"), "polygon": zone.get("polygon")})
             seen.add(zone_name)
         if len(rows) >= limit:
             break
@@ -1098,8 +1013,7 @@ def build_city_prediction(city: str) -> dict[str, Any] | None:
         source = (target[0] + 0.45, target[1] + 0.18)
         speed_kmh = 250.0
 
-    distance = haversine_km(source[0], source[1], target[0], target[1])
-    distance = max(distance, 5.0)
+    distance = max(haversine_km(source[0], source[1], target[0], target[1]), 5.0)
     flight_minutes = max(0.5, distance / speed_kmh * 60.0)
     brng = bearing_deg(source[0], source[1], target[0], target[1])
     impact = destination_point(source[0], source[1], brng, distance)
@@ -1117,19 +1031,6 @@ def build_city_prediction(city: str) -> dict[str, Any] | None:
         "target_polygon": target_polygon,
         "reason": "אומדן ניסיוני עם שכבת אזורי התרעה אמיתיים. המסלול והאזור הסגול אינם נתונים רשמיים.",
     }
-
-
-def latest_event_for_city(city: str) -> dict[str, Any] | None:
-    for event in reversed(store.events):
-        if city in event.cities:
-            return {
-                "type": "alert",
-                "city": city,
-                "cities": event.cities,
-                "ts": event.ts,
-                "datetime": datetime.fromtimestamp(event.ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S"),
-            }
-    return None
 
 
 @app.get("/")
@@ -1159,10 +1060,7 @@ def api_cities():
 @app.get("/api/zones")
 def api_zones():
     store.ensure_loaded()
-    return jsonify({
-        "zones": store.zones,
-        "centroids": {k: [v[0], v[1]] for k, v in store.zone_centroids.items()},
-    })
+    return jsonify({"zones": store.zones, "centroids": {k: [v[0], v[1]] for k, v in store.zone_centroids.items()}})
 
 
 @app.get("/api/city-stats")
