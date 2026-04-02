@@ -183,7 +183,7 @@ HTML = r'''<!doctype html>
 <body>
   <div class="wrap">
     <div class="card" style="margin-bottom:20px;">
-      <div class="title">🚨 Iron Monitor Live</div>
+      <div class="title">🚨 דשבורד גדוד 926🚨</div>
       <div class="sub">
         מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב מוצג בנפרד.
       </div>
@@ -539,8 +539,9 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
       const rLng = 51.0 + (Math.random() - 0.5) * 4;
       start = [rLat, rLng];
     } else if (origin === 'lebanon') {
-      const rLat = 33.4 + Math.random() * 0.5;
-      const rLng = 35.2 + (Math.random() - 0.5) * 0.6;
+      // Старт исключительно с суши на юге Ливана, чтобы избежать моря
+      const rLat = 33.35 + Math.random() * 0.45;
+      const rLng = 35.35 + Math.random() * 0.35;
       start = [rLat, rLng];
     } else {
       start = [target[0], target[1] + 1.8];
@@ -625,7 +626,11 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     rocket.setLatLng(pos);
     
     trailLatLngs.push(pos);
-    if (isDrone && trailLatLngs.length > 5) trailLatLngs.shift();
+    
+    // Короткий хвост для дрона
+    if (isDrone && trailLatLngs.length > 5) {
+        trailLatLngs.shift();
+    }
     
     trail.setLatLngs(trailLatLngs);
     glowTrail.setLatLngs(trailLatLngs);
@@ -720,7 +725,7 @@ function processNewFeedEvents(eventsArray, skipAnimations = false) {
     
     const zone = zoneIndex[city];
     const origin = detectEstimatedOrigin(city, zone);
-    if (origin === 'gaza') return;
+    if (origin === 'gaza') return; // Исключаем Газу (клиентская часть)
 
     processedEventKeys.add(eventKey);
 
@@ -1170,7 +1175,7 @@ class DataStore:
                         lat = location.get("lat")
                         lng = location.get("lng")
                     
-                    # ФИЛЬТР ГАЗЫ И ЮГА
+                    # ФИЛЬТР ГАЗЫ И ЮГА (Серверная часть)
                     if lat is not None and lat < 31.7 and lng < 34.7:
                         continue
                     if any(keyword in title for keyword in ["עוטף עזה", "לכיש", "מערב הנגב", "מרכז הנגב", "Gaza Envelope"]):
@@ -1283,7 +1288,7 @@ class DataStore:
                 centroids[name] = centroid
                 centroids[raw_name] = centroid
 
-        for alias, canonical in ZONE_NAME_ALIitems():
+        for alias, canonical in ZONE_NAME_ALIASES.items():
             if canonical in parsed:
                 parsed[alias] = parsed[canonical]
                 if canonical in centroids: centroids[alias] = centroids[canonical]
