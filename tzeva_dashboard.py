@@ -283,8 +283,8 @@ let map = null;
 let stream = null;
 let liveCountryLayer = null;
 
-let activeAlertsMap = {}; // Хранит активные полигоны
-let processedEventKeys = new Set(); // Хранит хеши обработанных событий, чтобы не мигать старыми
+let activeAlertsMap = {}; 
+let processedEventKeys = new Set(); 
 let activeAnimations = [];
 
 let zoneIndex = {};
@@ -494,7 +494,7 @@ function originStyle(origin) {
   };
 }
 
-// АНИМАЦИЯ ПОЛЕТА (СОХРАНЕНА)
+
 function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
   if (!map || !zone?.polygon?.length) return;
 
@@ -560,7 +560,6 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
     trail.addLatLng(pos);
     glowTrail.addLatLng(pos);
     
-    // Поворот по направлению
     const angle = Math.atan2(target[1] - pos[1], target[0] - pos[0]) * 180 / Math.PI;
     const el = rocket.getElement();
     if (el) {
@@ -593,14 +592,13 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
   setTimeout(() => requestAnimationFrame(step), delayMs);
 }
 
-// ПУЛЬСАЦИЯ ДЛЯ КАТЕГОРИЙ (Красный/Желтый)
+
 function pulsePolygonCustom(layer, category) {
   const isDrone = category === 2;
   const started = Date.now();
   let on = false;
   
   const timer = setInterval(() => {
-    // Если слой удален (например, пришла категория 13), останавливаем таймер
     if (!map.hasLayer(layer)) {
       clearInterval(timer);
       return;
@@ -618,9 +616,8 @@ function pulsePolygonCustom(layer, category) {
   }, 600);
 }
 
-// НОВЫЙ ГЛАВНЫЙ ОБРАБОТЧИК МАССИВА СОБЫТИЙ (API SNAPSHOT)
+
 function processNewFeedEvents(eventsArray) {
-  // Сортируем от старых к новым
   eventsArray.sort((a, b) => new Date(a.alertDate) - new Date(b.alertDate));
 
   eventsArray.forEach(ev => {
@@ -628,12 +625,10 @@ function processNewFeedEvents(eventsArray) {
     const category = ev.category;
     const title = ev.title;
     
-    // Создаем уникальный ключ, чтобы не обрабатывать одно событие дважды
     const eventKey = `${city}_${ev.alertDate}_${category}`;
     if (processedEventKeys.has(eventKey)) return;
     processedEventKeys.add(eventKey);
 
-    // КАТЕГОРИЯ 13: ОТБОЙ ТРЕВОГИ
     if (category === 13) {
       if (activeAlertsMap[city]) {
         fadeAndRemoveLayer(activeAlertsMap[city], 1000, 0);
@@ -642,12 +637,15 @@ function processNewFeedEvents(eventsArray) {
       return;
     }
 
-    // КАТЕГОРИИ 1 (Ракета) или 2 (БПЛА)
     if (category === 1 || category === 2) {
-      if (activeAlertsMap[city]) return; // Если уже горит, не дублируем
+      if (activeAlertsMap[city]) return;
 
       const zone = zoneIndex[city];
+      let targetCoords = null;
+      let createdLayer = null;
+
       if (zone && zone.polygon && zone.polygon.length > 0) {
+        targetCoords = polygonCenter(zone.polygon);
         const isDrone = category === 2;
         const baseColor = isDrone ? '#f59e0b' : '#ff4d4d';
 
@@ -664,28 +662,15 @@ function processNewFeedEvents(eventsArray) {
         
         polygon.addTo(liveCountryLayer);
         pulsePolygonCustom(polygon, category);
-        
-        // ЗАПУСКАЕМ АНИМАЦИЮ ПОЛЕТА
-        animateFlightToPolygon(city, zone, 0);
-
-        activeAlertsMap[city] = polygon;
-
-        // Фолбэк на случай, если Категория 13 не придет: удаляем через 5 минут
-        setTimeout(() => {
-          if (activeAlertsMap[city] === polygon) {
-            fadeAndRemoveLayer(polygon, 1800, 0);
-            delete activeAlertsMap[city];
-            updateMapCaption();
-          }
-        }, 300000);
+        createdLayer = polygon;
 
       } else {
-        // Если полигона нет в локальной базе — ставим маркер
-        const centroid = zoneCentroids[city] || fallbackCityCoords[city];
-        if (centroid) {
+        targetCoords = zoneCentroids[city] || fallbackCityCoords[city] || (ev.lat && ev.lng ? [ev.lat, ev.lng] : null);
+        
+        if (targetCoords) {
           const isDrone = category === 2;
           const mColor = isDrone ? '#f59e0b' : '#ff2d55';
-          const marker = L.circleMarker([centroid[0], centroid[1]], {
+          const marker = L.circleMarker(targetCoords, {
             radius: 8,
             color: mColor,
             weight: 2,
@@ -694,16 +679,22 @@ function processNewFeedEvents(eventsArray) {
           }).bindPopup(`<b>${city}</b><br>${title}`);
           
           marker.addTo(liveCountryLayer);
-          activeAlertsMap[city] = marker;
-          
-          setTimeout(() => {
-            if (activeAlertsMap[city] === marker) {
-              fadeAndRemoveLayer(marker, 1000, 0);
-              delete activeAlertsMap[city];
-              updateMapCaption();
-            }
-          }, 300000);
+          createdLayer = marker;
         }
+      }
+
+      if (createdLayer && targetCoords) {
+        activeAlertsMap[city] = createdLayer;
+        
+        animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0);
+
+        setTimeout(() => {
+          if (activeAlertsMap[city] === createdLayer) {
+            fadeAndRemoveLayer(createdLayer, 1800, 0);
+            delete activeAlertsMap[city];
+            updateMapCaption();
+          }
+        }, 300000);
       }
     }
   });
@@ -894,11 +885,9 @@ function connectLiveStream() {
         return;
       }
 
-      // ПЕРЕДАЕМ НОВЫЙ МАССИВ В ОБРАБОТЧИК
       if (Array.isArray(payload)) {
         processNewFeedEvents(payload);
         
-        // Выводим последний ивент в статус
         const activeAlerts = payload.filter(p => p.category === 1 || p.category === 2);
         if (activeAlerts.length > 0) {
             const latest = activeAlerts[activeAlerts.length - 1];
@@ -1057,7 +1046,6 @@ class DataStore:
                 return
 
             data = json.loads(raw)
-            # Извлекаем тревоги по новой логике
             alerts = self._extract_live_alerts_from_snapshot(data)
             self.live_alerts = alerts
             self.last_live_refresh = now
@@ -1070,7 +1058,6 @@ class DataStore:
 
         if isinstance(data, dict) and "events" in data:
             for event in data.get("events", []):
-                # Нас интересуют только "alert" (игнорируем социалки и самолеты)
                 if event.get("eventType") == "alert":
                     props = event.get("properties", {})
                     city_he = props.get("cityHebrew")
@@ -1084,19 +1071,26 @@ class DataStore:
                     title = props.get("title", "")
                     alert_date = event.get("time", "")
                     
-                    # ОПРЕДЕЛЯЕМ КАТЕГОРИЮ
+                    location = event.get("location")
+                    lat, lng = None, None
+                    if location and isinstance(location, dict):
+                        lat = location.get("lat")
+                        lng = location.get("lng")
+                    
                     if alert_state == "cleared" or "הסתיים" in title:
-                        category = 13 # Отбой
+                        category = 13 
                     elif "כלי טיס" in alert_type or "UAV" in alert_type:
-                        category = 2  # БПЛА
+                        category = 2  
                     else:
-                        category = 1  # Ракеты
+                        category = 1  
                         
                     results.append({
                         "alertDate": alert_date,
                         "title": title if title else alert_type,
                         "data": city_name,
-                        "category": category
+                        "category": category,
+                        "lat": lat, 
+                        "lng": lng
                     })
                     
         return results
@@ -1378,7 +1372,6 @@ def api_stream():
     Server-Sent Events (SSE) endpoint for Live Alerts.
     """
     def generate():
-        # Отправляем начальный heartbeat при подключении
         yield f"data: {json.dumps({'type': 'heartbeat', 'server_time': datetime.now(TZ).strftime('%H:%M:%S')})}\n\n"
         
         while True:
@@ -1396,6 +1389,5 @@ def api_stream():
 
 if __name__ == "__main__":
     print("Starting Iron Monitor Live...")
-    # Загружаем данные до запуска сервера
     store.ensure_loaded()
     app.run(host="0.0.0.0", port=5000, threaded=True)
