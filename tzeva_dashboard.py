@@ -17,7 +17,7 @@ app = Flask(__name__)
 TZ = ZoneInfo("Asia/Jerusalem")
 
 DATA_URL = "https://www.tzevaadom.co.il/static/historical/all.json"
-SNAPSHOT_URL = "https://iwm.diskin.net/api/snapshot"
+SNAPSHOT_URL = "https://iwm.diskin.net/api/state/snapshot"
 LOCAL_ZONE_SOURCE = Path("alert-zones-local.json")
 
 CACHE_DIR = Path("cache")
