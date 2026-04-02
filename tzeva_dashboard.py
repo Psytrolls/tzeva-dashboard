@@ -720,7 +720,12 @@ class DataStore:
         if not force and DATA_FILE.exists():
             age = time.time() - DATA_FILE.stat().st_mtime
             if age < REFRESH_SECONDS:
-                return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+                try:
+                    cached = DATA_FILE.read_text(encoding="utf-8").strip()
+                    if cached:
+                        return json.loads(cached)
+                except Exception:
+                    pass
 
         req = Request(
             DATA_URL,
@@ -732,18 +737,27 @@ class DataStore:
         with urlopen(req, timeout=60) as resp:
             raw_bytes = resp.read()
 
-        DATA_FILE.write_bytes(raw_bytes)
+        raw_text = raw_bytes.decode("utf-8").strip()
+        if not raw_text:
+            raise RuntimeError("Downloaded all.json is empty")
+
+        DATA_FILE.write_text(raw_text, encoding="utf-8")
         META_FILE.write_text(
             json.dumps({"refreshed_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return json.loads(raw_bytes.decode("utf-8"))
+        return json.loads(raw_text)
 
     def _download_zones(self, force: bool = False) -> dict[str, Any]:
         if not force and ZONE_FILE.exists():
             age = time.time() - ZONE_FILE.stat().st_mtime
             if age < ZONE_REFRESH_SECONDS:
-                return json.loads(ZONE_FILE.read_text(encoding="utf-8"))
+                try:
+                    cached = ZONE_FILE.read_text(encoding="utf-8").strip()
+                    if cached:
+                        return json.loads(cached)
+                except Exception:
+                    pass
 
         try:
             req = Request(
@@ -755,11 +769,21 @@ class DataStore:
             )
             with urlopen(req, timeout=60) as resp:
                 raw_bytes = resp.read()
-            ZONE_FILE.write_bytes(raw_bytes)
-            return json.loads(raw_bytes.decode("utf-8"))
+
+            raw_text = raw_bytes.decode("utf-8").strip()
+            if not raw_text:
+                raise RuntimeError("Downloaded alert-zones.json is empty")
+
+            ZONE_FILE.write_text(raw_text, encoding="utf-8")
+            return json.loads(raw_text)
         except Exception:
             if ZONE_FILE.exists():
-                return json.loads(ZONE_FILE.read_text(encoding="utf-8"))
+                try:
+                    cached = ZONE_FILE.read_text(encoding="utf-8").strip()
+                    if cached:
+                        return json.loads(cached)
+                except Exception:
+                    pass
             return {"zones": {}}
 
     def _build_indexes(self, raw: Any) -> None:
@@ -875,7 +899,9 @@ class DataStore:
         refreshed_at = None
         if META_FILE.exists():
             try:
-                refreshed_at = json.loads(META_FILE.read_text(encoding="utf-8")).get("refreshed_at")
+                cached = META_FILE.read_text(encoding="utf-8").strip()
+                if cached:
+                    refreshed_at = json.loads(cached).get("refreshed_at")
             except Exception:
                 refreshed_at = None
 
