@@ -285,6 +285,7 @@ let liveCountryPolygons = [];
 let zoneIndex = {};
 let zoneCentroids = {};
 let hasFittedMap = false;
+let activeAnimations = [];
 
 const fallbackCityCoords = {
   "אשקלון": [31.6688, 34.5743],
@@ -366,7 +367,106 @@ function clearLiveLayers() {
   liveCountryLayer.clearLayers();
   liveCountryMarkers = [];
   liveCountryPolygons = [];
+  clearActiveAnimations();
   setText('mapCaption', 'לייב ארצי פעיל · 0 פוליגונים · 0 סימונים');
+}
+
+function clearActiveAnimations() {
+  if (!map) return;
+  for (const layer of activeAnimations) {
+    try { map.removeLayer(layer); } catch (e) {}
+  }
+  activeAnimations = [];
+}
+
+function polygonCenter(points) {
+  if (!points || !points.length) return null;
+  let lat = 0;
+  let lon = 0;
+  for (const p of points) {
+    lat += p[0];
+    lon += p[1];
+  }
+  return [lat / points.length, lon / points.length];
+}
+
+function animationDurationByCountdown(countdown) {
+  const cd = Number(countdown || 0);
+  if (cd >= 60) return 6500;
+  if (cd >= 30) return 4200;
+  if (cd >= 15) return 2600;
+  return 1600;
+}
+
+function animateFlightToPolygon(zoneName, zone) {
+  if (!map || !zone?.polygon?.length) return;
+
+  const target = polygonCenter(zone.polygon);
+  if (!target) return;
+
+  let start = null;
+  if ((zone.countdown || 0) >= 60) {
+    start = [32.1, 39.5];
+  } else if (target[0] >= 32.8) {
+    start = [33.45, 35.35];
+  } else if (target[0] <= 31.6) {
+    start = [31.5, 34.45];
+  } else {
+    start = [target[0], target[1] + 1.8];
+  }
+
+  const duration = animationDurationByCountdown(zone.countdown);
+
+  const trail = L.polyline([start], {
+    color: '#ffd166',
+    weight: 3,
+    opacity: 0.95,
+    dashArray: '8,8'
+  }).addTo(liveCountryLayer);
+
+  const rocket = L.circleMarker(start, {
+    radius: 6,
+    color: '#ffd166',
+    weight: 2,
+    fillColor: '#ffcc00',
+    fillOpacity: 1,
+  }).addTo(liveCountryLayer);
+
+  activeAnimations.push(trail, rocket);
+
+  let started = null;
+  function step(ts) {
+    if (!started) started = ts;
+    const progress = Math.min((ts - started) / duration, 1);
+    const lat = start[0] + (target[0] - start[0]) * progress;
+    const lon = start[1] + (target[1] - start[1]) * progress;
+    const pos = [lat, lon];
+    rocket.setLatLng(pos);
+    trail.addLatLng(pos);
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    const blast = L.circle(target, {
+      radius: 1200,
+      color: '#ff4d4d',
+      weight: 2,
+      fillColor: '#ff0000',
+      fillOpacity: 0.28,
+    }).addTo(liveCountryLayer);
+    activeAnimations.push(blast);
+
+    setTimeout(() => {
+      try { liveCountryLayer.removeLayer(rocket); } catch (e) {}
+      try { liveCountryLayer.removeLayer(trail); } catch (e) {}
+      try { liveCountryLayer.removeLayer(blast); } catch (e) {}
+      activeAnimations = activeAnimations.filter(x => x !== rocket && x !== trail && x !== blast);
+    }, 2200);
+  }
+
+  requestAnimationFrame(step);
 }
 
 function pulsePolygon(layer, durationMs = 120000) {
@@ -432,6 +532,7 @@ function addLivePolygon(zoneName, label) {
   `);
   polygon.addTo(liveCountryLayer);
   pulsePolygon(polygon);
+  animateFlightToPolygon(zoneName, zone);
   liveCountryPolygons.push(polygon);
 
   polygon.on('click', () => polygon.openPopup());
