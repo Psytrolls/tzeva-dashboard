@@ -305,9 +305,10 @@ async function getJson(url, options = {}) {
 function ensureMap() {
   if (map) return;
   map = L.map('map', { zoomControl: true }).setView([31.6, 34.9], 8);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 18,
-    attribution: '&copy; OpenStreetMap'
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    subdomains: 'abcd',
+    attribution: '&copy; OpenStreetMap &copy; CARTO'
   }).addTo(map);
   mapLayer = L.layerGroup().addTo(map);
   liveCountryLayer = L.layerGroup().addTo(map);
@@ -514,7 +515,7 @@ async function loadCities() {
   allCities = data.cities;
   const dl = document.getElementById('citiesList');
   dl.innerHTML = allCities.map(c => `<option value="${c}"></option>`).join('');
-  const preferred = ['חולון', 'אשדוד', 'אשקלון', 'באר שבע'];
+  const preferred = ['חולון', 'אשדוד', 'אשקלון', 'באר שבע', 'תל אביב - מרכז העיר'];
   const first = preferred.find(x => allCities.includes(x)) || allCities[0] || '';
   if (!document.getElementById('citySelect').value) {
     document.getElementById('citySelect').value = first;
@@ -582,13 +583,24 @@ function renderSummary(data) {
 }
 
 async function loadDashboard() {
-  const city = document.getElementById('citySelect').value.trim();
+  let city = document.getElementById('citySelect').value.trim();
   const from = document.getElementById('fromDate').value;
   const to = document.getElementById('toDate').value;
+
   if (!city) {
-    alert('בחר עיר או אזור');
+    city = allCities.includes('חולון') ? 'חולון' : (allCities[0] || '');
+    if (city) {
+      document.getElementById('citySelect').value = city;
+    }
+  }
+
+  if (!city) {
+    setText('liveStatus', 'ממתין לנתונים...');
+    ensureMap();
+    setText('mapCaption', `לייב ארצי פעיל · ${liveCountryMarkers.length} אירועים גלויים`);
     return;
   }
+
   const params = new URLSearchParams({ city, from, to });
   const data = await getJson(`/api/city-stats?${params.toString()}`);
   renderSummary(data);
@@ -615,6 +627,7 @@ function connectLiveStream() {
 
   stream.onerror = () => {
     setText('liveStatus', '🟠 בעיית חיבור לשידור חי, מנסה להתחבר מחדש...');
+    ensureMap();
   };
 
   stream.onmessage = async (event) => {
@@ -1034,10 +1047,14 @@ def build_city_prediction(city: str) -> dict[str, Any] | None:
         source_name = "צפון עזה"
         source = (31.50, 34.45)
         speed_kmh = 220.0
+    elif city in {"חולון", "בת ים", "ראשון לציון", "ירושלים", "חיפה", "גוש דן", "תל אביב - מרכז העיר", "תל אביב - עבר הירקון", "מרכז הנגב"}:
+        source_name = "איראן"
+        source = (32.10, 39.50)
+        speed_kmh = 700.0
     else:
-        source_name = "כיוון משוער אזורי"
-        source = (target[0] + 0.45, target[1] + 0.18)
-        speed_kmh = 250.0
+        source_name = "כיוון מזרחי משוער"
+        source = (target[0] + 0.10, target[1] + 4.20)
+        speed_kmh = 650.0
 
     distance = max(haversine_km(source[0], source[1], target[0], target[1]), 5.0)
     flight_minutes = max(0.5, distance / speed_kmh * 60.0)
