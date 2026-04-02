@@ -83,7 +83,11 @@ HTML = r'''<!doctype html>
 <html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0a101b" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/1164/1164328.png" />
+  
   <title>Iron Monitor Live</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -168,6 +172,11 @@ HTML = r'''<!doctype html>
     .dot.yellow { background:#f97316; } 
     .dot.light-yellow { background:#fef08a; } 
     .dot.green { background:#3ddc97; }
+    
+    /* Стили для переключателя слоев карты */
+    .leaflet-control-layers { background: rgba(19,27,43,.9) !important; color: #eef3ff !important; border: 1px solid rgba(255,255,255,.1) !important; border-radius: 12px !important; }
+    .leaflet-control-layers-list { padding: 5px; }
+
     @media (max-width:1150px) {
       .grid { grid-template-columns:1fr; }
       .controls, .stats { grid-template-columns:1fr; }
@@ -183,7 +192,7 @@ HTML = r'''<!doctype html>
 <body>
   <div class="wrap">
     <div class="card" style="margin-bottom:20px;">
-      <div class="title">🚨 דשבורד גדוד 926🚨</div>
+      <div class="title">🚨 Iron Monitor Live</div>
       <div class="sub">
         מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב מוצג בנפרד.
       </div>
@@ -281,6 +290,15 @@ HTML = r'''<!doctype html>
   </div>
 
 <script>
+// Регистрация Service Worker для работы PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => console.log('Service Worker registered!', reg))
+      .catch(err => console.log('Service Worker registration failed:', err));
+  });
+}
+
 let datasetMeta = null;
 let allCities = [];
 let dailyChart = null;
@@ -299,7 +317,6 @@ let zoneCentroids = {};
 let hasFittedMap = false;
 let isInitialStreamLoad = true;
 
-// Лимит для защиты от лагов при массивных обстрелах
 const MAX_CONCURRENT_FLIGHTS = 12;
 let activeFlightsCount = 0;
 
@@ -359,12 +376,39 @@ async function getJson(url, options = {}) {
 
 function ensureMap() {
   if (map) return;
-  map = L.map('map', { zoomControl: true }).setView([31.6, 35.0], 7);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  
+  // Создаем базовые слои
+  const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 20,
     subdomains: 'abcd',
     attribution: '&copy; OpenStreetMap &copy; CARTO'
-  }).addTo(map);
+  });
+
+  const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 20,
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+  });
+
+  const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors'
+  });
+
+  // Инициализируем карту с темным слоем по умолчанию
+  map = L.map('map', { 
+    zoomControl: true,
+    layers: [darkLayer]
+  }).setView([31.6, 35.0], 7);
+
+  // Добавляем контрол переключения слоев в левый верхний угол
+  const baseMaps = {
+    "עיצוב כהה (Dark)": darkLayer,
+    "לוויין (Satellite)": satelliteLayer,
+    "מפה רגילה (Street)": streetLayer
+  };
+  
+  L.control.layers(baseMaps, null, {position: 'topleft'}).addTo(map);
+
   liveCountryLayer = L.layerGroup().addTo(map);
   setTimeout(() => map.invalidateSize(), 300);
 }
@@ -404,7 +448,7 @@ function clearActiveAnimations() {
     try { map.removeLayer(layer); } catch (e) {}
   }
   activeAnimations = [];
-  activeFlightsCount = 0; // Сбрасываем счетчик ракет
+  activeFlightsCount = 0; 
 }
 
 function fadeAndRemoveLayer(layer, durationMs = 1800, targetOpacity = 0) {
@@ -467,8 +511,8 @@ function detectEstimatedOrigin(zoneName, zone) {
 }
 
 function animationDurationByOrigin(origin) {
-  if (origin === 'iran') return 50000; // 50 секунд для Ирана
-  if (origin === 'lebanon') return 30000; // 30 секунд для севера
+  if (origin === 'iran') return 50000; 
+  if (origin === 'lebanon') return 30000; 
   return 30000; 
 }
 
@@ -516,7 +560,7 @@ function originStyle(origin, isDrone = false) {
 
 function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
   if (!map || !zone?.polygon?.length) return;
-  if (activeFlightsCount >= MAX_CONCURRENT_FLIGHTS) return; // ПРОПУСКАЕМ ЕСЛИ СЛИШКОМ МНОГО РАКЕТ
+  if (activeFlightsCount >= MAX_CONCURRENT_FLIGHTS) return; 
 
   const target = polygonCenter(zone.polygon);
   if (!target) return;
@@ -539,7 +583,6 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
       const rLng = 51.0 + (Math.random() - 0.5) * 4;
       start = [rLat, rLng];
     } else if (origin === 'lebanon') {
-      // Старт исключительно с суши на юге Ливана, чтобы избежать моря
       const rLat = 33.35 + Math.random() * 0.45;
       const rLng = 35.35 + Math.random() * 0.35;
       start = [rLat, rLng];
@@ -549,7 +592,7 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     duration = animationDurationByOrigin(origin);
   }
 
-  activeFlightsCount++; // УВЕЛИЧИВАЕМ СЧЕТЧИК ПОЛЕТОВ
+  activeFlightsCount++; 
 
   const trail = L.polyline([start], {
     color: style.trail,
@@ -627,7 +670,6 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     
     trailLatLngs.push(pos);
     
-    // Короткий хвост для дрона
     if (isDrone && trailLatLngs.length > 5) {
         trailLatLngs.shift();
     }
@@ -664,7 +706,6 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
       fadeAndRemoveLayer(glowTrail, 2600, 0);
       fadeAndRemoveLayer(blast, 1600, 0);
       
-      // ОСВОБОЖДАЕМ СЛОТ ДЛЯ НОВОЙ РАКЕТЫ
       activeFlightsCount--;
       if (activeFlightsCount < 0) activeFlightsCount = 0;
       
@@ -725,7 +766,7 @@ function processNewFeedEvents(eventsArray, skipAnimations = false) {
     
     const zone = zoneIndex[city];
     const origin = detectEstimatedOrigin(city, zone);
-    if (origin === 'gaza') return; // Исключаем Газу (клиентская часть)
+    if (origin === 'gaza') return; 
 
     processedEventKeys.add(eventKey);
 
@@ -840,7 +881,7 @@ function renderHourlyChart(items) {
       responsive: true,
       plugins: { legend: { labels: { color: '#dbe5ff' } } },
       scales: {
-        x: { ticks: { color: '#aebee4' }, grid: { color: 'rgba(255,255,255,.05)' } },
+        x: { ticks: { color: '#aebee4', maxRotation: 90, minRotation: 90, autoSkip: false }, grid: { color: 'rgba(255,255,255,.05)' } },
         y: { beginAtZero: true, ticks: { color: '#aebee4' }, grid: { color: 'rgba(255,255,255,.05)' } },
       }
     }
@@ -1175,7 +1216,7 @@ class DataStore:
                         lat = location.get("lat")
                         lng = location.get("lng")
                     
-                    # ФИЛЬТР ГАЗЫ И ЮГА (Серверная часть)
+                    # ФИЛЬТР ГАЗЫ И ЮГА
                     if lat is not None and lat < 31.7 and lng < 34.7:
                         continue
                     if any(keyword in title for keyword in ["עוטף עזה", "לכיש", "מערב הנגב", "מרכז הנגב", "Gaza Envelope"]):
@@ -1340,6 +1381,38 @@ def daterange_days(start: str, end: str) -> list[str]:
 def index() -> Response:
     store.ensure_loaded()
     return Response(HTML, mimetype="text/html")
+
+@app.get("/manifest.json")
+def manifest():
+    manifest_data = {
+        "name": "Iron Monitor Live",
+        "short_name": "Iron Monitor",
+        "description": "Live alerts and statistics for Israel",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0a101b",
+        "theme_color": "#0a101b",
+        "icons": [
+            {
+                "src": "https://cdn-icons-png.flaticon.com/512/1164/1164328.png",
+                "sizes": "512x512",
+                "type": "image/png"
+            }
+        ]
+    }
+    return jsonify(manifest_data)
+
+@app.get("/sw.js")
+def service_worker():
+    sw_code = """
+    self.addEventListener('install', (e) => {
+      self.skipWaiting();
+    });
+    self.addEventListener('fetch', (e) => {
+      // Fetch through network
+    });
+    """
+    return Response(sw_code, mimetype="application/javascript")
 
 @app.get("/api/meta")
 def api_meta():
