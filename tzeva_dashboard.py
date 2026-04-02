@@ -181,7 +181,7 @@ HTML = r'''<!doctype html>
     <div class="card" style="margin-bottom:20px;">
       <div class="title">🚨 Iron Monitor Live</div>
       <div class="sub">
-        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים.
+        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב מוצג בנפרד.
       </div>
       <div class="small" id="datasetMeta" style="margin-top:10px;">טוען נתונים...</div>
       <div class="small" id="liveStatus" style="margin-top:6px;">מתחבר לשידור חי...</div>
@@ -922,9 +922,14 @@ function renderHourlyChart(items) {
 
 async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
-  setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
+  setText(
+    'datasetMeta',
+    `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · בסיס היסטורי: ${minDate} → ${maxDate} · עדכון היסטוריה: ${refreshed}`
+  );
 
+  const minDate = datasetMeta?.min_date || '—';
   const maxDate = datasetMeta?.max_date || todayLocalISO();
+  const refreshed = datasetMeta?.refreshed_at || '—';
   if (!document.getElementById('toDate').value) document.getElementById('toDate').value = maxDate;
   if (!document.getElementById('fromDate').value) document.getElementById('fromDate').value = shiftDays(maxDate, -29);
 }
@@ -1000,6 +1005,10 @@ async function loadDashboard() {
   const from = document.getElementById('fromDate').value;
   const to = document.getElementById('toDate').value;
 
+  if (datasetMeta?.max_date && to > datasetMeta.max_date) {
+    document.getElementById('toDate').value = datasetMeta.max_date;
+  }
+
   if (!city) {
     city = allCities.includes('חולון') ? 'חולון' : (allCities[0] || '');
     if (city) document.getElementById('citySelect').value = city;
@@ -1007,7 +1016,9 @@ async function loadDashboard() {
 
   if (!city) return;
 
-  const params = new URLSearchParams({ city, from, to });
+  const safeFrom = document.getElementById('fromDate').value;
+  const safeTo = document.getElementById('toDate').value;
+  const params = new URLSearchParams({ city, from: safeFrom, to: safeTo });
   const data = await getJson(`/api/city-stats?${params.toString()}`);
   renderSummary(data);
 }
@@ -1054,7 +1065,6 @@ function connectLiveStream() {
       const selectedCity = document.getElementById('citySelect').value.trim();
       if (payload.cities && payload.cities.includes(selectedCity)) {
         setText('liveStatus', `🟢 התקבל אירוע חדש עבור ${selectedCity} · ${payload.datetime}`);
-        await loadMeta();
         await loadDashboard();
       } else {
         setText('liveStatus', `🟢 אירוע לייב חדש: ${payload.cities?.slice(0,3).join(', ') || '—'}`);
@@ -1550,6 +1560,8 @@ def api_city_stats():
     }
 
     return jsonify({
+        "dataset_max_date": store.max_date,
+        "dataset_min_date": store.min_date,
         "city": city,
         "daily": daily_rows,
         "hourly_distribution": hourly_distribution,
