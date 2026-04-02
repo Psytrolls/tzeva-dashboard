@@ -923,19 +923,20 @@ async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
 
   const minDate = datasetMeta?.min_date || '—';
-  const maxDate = datasetMeta?.max_date || todayLocalISO();
+  const dbMaxDate = datasetMeta?.max_date || '—'; 
+  const actualToday = todayLocalISO(); 
   const refreshed = datasetMeta?.refreshed_at || '—';
 
   setText(
     'datasetMeta',
-    `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · בסיס היסטורי: ${minDate} → ${maxDate} · עדכון היסטוריה: ${refreshed}`
+    `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · בסיס היסטורי: ${minDate} → ${dbMaxDate} · עדכון היסטוריה: ${refreshed}`
   );
 
   if (!document.getElementById('toDate').value) {
-    document.getElementById('toDate').value = maxDate;
+    document.getElementById('toDate').value = actualToday;
   }
   if (!document.getElementById('fromDate').value) {
-    document.getElementById('fromDate').value = shiftDays(maxDate, -29);
+    document.getElementById('fromDate').value = shiftDays(actualToday, -29);
   }
 }
 
@@ -953,15 +954,16 @@ async function loadCities() {
 
 function applyPreset() {
   const preset = document.getElementById('preset').value;
-  const maxDate = datasetMeta?.max_date || todayLocalISO();
+  const actualToday = todayLocalISO();
+  
   if (preset === 'all') {
-    document.getElementById('fromDate').value = datasetMeta?.min_date || maxDate;
-    document.getElementById('toDate').value = maxDate;
+    document.getElementById('fromDate').value = datasetMeta?.min_date || actualToday;
+    document.getElementById('toDate').value = actualToday;
     return;
   }
   const days = parseInt(preset, 10);
-  document.getElementById('toDate').value = maxDate;
-  document.getElementById('fromDate').value = shiftDays(maxDate, -(days - 1));
+  document.getElementById('toDate').value = actualToday;
+  document.getElementById('fromDate').value = shiftDays(actualToday, -(days - 1));
 }
 
 function renderSummary(data) {
@@ -1009,10 +1011,6 @@ async function loadDashboard() {
   let city = document.getElementById('citySelect').value.trim();
   const from = document.getElementById('fromDate').value;
   const to = document.getElementById('toDate').value;
-
-  if (datasetMeta?.max_date && to > datasetMeta.max_date) {
-    document.getElementById('toDate').value = datasetMeta.max_date;
-  }
 
   if (!city) {
     city = allCities.includes('חולון') ? 'חולון' : (allCities[0] || '');
@@ -1511,7 +1509,8 @@ def api_city_stats():
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
 
-    today_date = store.max_date
+    # Используем РЕАЛЬНОЕ сегодня, а не максимальную дату из БД
+    today_date = datetime.now(TZ).strftime("%Y-%m-%d")
     last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
     last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
 
