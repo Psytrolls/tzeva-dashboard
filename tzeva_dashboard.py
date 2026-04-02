@@ -25,8 +25,8 @@ CACHE_DIR.mkdir(exist_ok=True)
 DATA_FILE = CACHE_DIR / "all.json"
 META_FILE = CACHE_DIR / "meta.json"
 
-REFRESH_SECONDS = 600
-STREAM_POLL_SECONDS = 3
+REFRESH_SECONDS = 7
+STREAM_POLL_SECONDS = 1
 DEFAULT_THREAT_TYPES = {0}
 ZONE_NAME_ALIASES = {
     "תל אביב מרכז העיר": "תל אביב - מרכז העיר",
