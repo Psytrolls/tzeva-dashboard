@@ -17,7 +17,7 @@ app = Flask(__name__)
 TZ = ZoneInfo("Asia/Jerusalem")
 
 DATA_URL = "https://www.tzevaadom.co.il/static/historical/all.json"
-OREF_ALERTS_HISTORY_URL = "https://www.oref.org.il/warningMessages/alert/AlertsHistory.json"
+SNAPSHOT_URL = "https://iwm.diskin.net/api/snapshot"
 LOCAL_ZONE_SOURCE = Path("alert-zones-local.json")
 
 CACHE_DIR = Path("cache")
@@ -28,7 +28,6 @@ META_FILE = CACHE_DIR / "meta.json"
 REFRESH_SECONDS = 600
 STREAM_POLL_SECONDS = 1
 LIVE_REFRESH_SECONDS = 2
-LIVE_MAX_ITEMS = 120
 DEFAULT_THREAT_TYPES = {0}
 ZONE_NAME_ALIASES = {
     "תל אביב מרכז העיר": "תל אביב - מרכז העיר",
@@ -181,7 +180,7 @@ HTML = r'''<!doctype html>
     <div class="card" style="margin-bottom:20px;">
       <div class="title">🚨 Iron Monitor Live</div>
       <div class="sub">
-        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב נמשך מפיד ההתרעות של פיקוד העורף, כולל הודעות סיום אירוע.
+        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב מוצג בנפרד.
       </div>
       <div class="small" id="datasetMeta" style="margin-top:10px;">טוען נתונים...</div>
       <div class="small" id="liveStatus" style="margin-top:6px;">מתחבר לשידור חי...</div>
@@ -228,7 +227,8 @@ HTML = r'''<!doctype html>
           </div>
           <div id="map"></div>
           <div class="legend">
-            <div class="pill"><span class="dot red"></span>פוליגוני לייב / סימונים</div>
+            <div class="pill"><span class="dot red"></span>ירי טילים (קטגוריה 1)</div>
+            <div class="pill"><span class="dot yellow"></span>כלי טיס (קטגוריה 2)</div>
             <div class="pill"><span class="dot green"></span>שידור חי מחובר</div>
           </div>
         </div>
@@ -282,12 +282,14 @@ let hourlyChart = null;
 let map = null;
 let stream = null;
 let liveCountryLayer = null;
-let liveCountryMarkers = [];
-let liveCountryPolygons = [];
+
+let activeAlertsMap = {}; // Хранит активные полигоны
+let processedEventKeys = new Set(); // Хранит хеши обработанных событий, чтобы не мигать старыми
+let activeAnimations = [];
+
 let zoneIndex = {};
 let zoneCentroids = {};
 let hasFittedMap = false;
-let activeAnimations = [];
 
 const fallbackCityCoords = {
   "אשקלון": [31.6688, 34.5743],
@@ -361,16 +363,21 @@ function initCountryMapView() {
     map.setView([31.6, 35.0], 7);
     hasFittedMap = true;
   }
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
+  updateMapCaption();
+}
+
+function updateMapCaption() {
+    const count = Object.keys(activeAlertsMap).length;
+    setText('mapCaption', `לייב ארצי · איומים פעילים כרגע: ${count}`);
 }
 
 function clearLiveLayers() {
   if (!liveCountryLayer) return;
   liveCountryLayer.clearLayers();
-  liveCountryMarkers = [];
-  liveCountryPolygons = [];
+  activeAlertsMap = {};
+  processedEventKeys.clear();
   clearActiveAnimations();
-  setText('mapCaption', 'לייב ארצי פעיל · 0 פוליגונים · 0 סימונים');
+  updateMapCaption();
 }
 
 function clearActiveAnimations() {
@@ -487,6 +494,7 @@ function originStyle(origin) {
   };
 }
 
+// АНИМАЦИЯ ПОЛЕТА (СОХРАНЕНА)
 function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
   if (!map || !zone?.polygon?.length) return;
 
@@ -551,6 +559,8 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
     rocket.setLatLng(pos);
     trail.addLatLng(pos);
     glowTrail.addLatLng(pos);
+    
+    // Поворот по направлению
     const angle = Math.atan2(target[1] - pos[1], target[0] - pos[0]) * 180 / Math.PI;
     const el = rocket.getElement();
     if (el) {
@@ -583,297 +593,122 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
   setTimeout(() => requestAnimationFrame(step), delayMs);
 }
 
-function pulsePolygon(layer, durationMs = 120000) {
+// ПУЛЬСАЦИЯ ДЛЯ КАТЕГОРИЙ (Красный/Желтый)
+function pulsePolygonCustom(layer, category) {
+  const isDrone = category === 2;
   const started = Date.now();
   let on = false;
+  
   const timer = setInterval(() => {
-    const elapsed = Date.now() - started;
-    if (elapsed >= durationMs) {
+    // Если слой удален (например, пришла категория 13), останавливаем таймер
+    if (!map.hasLayer(layer)) {
       clearInterval(timer);
-      try {
-        layer.setStyle({ color: '#ff4d4d', weight: 2, fillColor: '#ff4d4d', fillOpacity: 0.18 });
-      } catch (e) {}
       return;
     }
+    
     on = !on;
     try {
       layer.setStyle({
-        color: on ? '#ffd166' : '#ff4d4d',
+        color: on ? (isDrone ? '#ffd166' : '#ffd166') : (isDrone ? '#f59e0b' : '#ff4d4d'),
         weight: on ? 3 : 2,
-        fillColor: on ? '#ff7d7d' : '#ff4d4d',
-        fillOpacity: on ? 0.30 : 0.18,
+        fillColor: on ? (isDrone ? '#ffb703' : '#ff7d7d') : (isDrone ? '#f59e0b' : '#ff4d4d'),
+        fillOpacity: on ? 0.35 : 0.15,
       });
     } catch (e) {}
-  }, 700);
+  }, 600);
 }
 
-function addLiveMarker(lat, lon, label, city) {
-  ensureMap();
-  const marker = L.circleMarker([lat, lon], {
-    radius: 7,
-    color: '#ff7d7d',
-    weight: 2,
-    fillColor: '#ff2d55',
-    fillOpacity: 0.9,
-  }).bindPopup(`<b>${city}</b><br>${label}<br>מיקום משוער`);
-  marker.addTo(liveCountryLayer);
-  liveCountryMarkers.push(marker);
+// НОВЫЙ ГЛАВНЫЙ ОБРАБОТЧИК МАССИВА СОБЫТИЙ (API SNAPSHOT)
+function processNewFeedEvents(eventsArray) {
+  // Сортируем от старых к новым
+  eventsArray.sort((a, b) => new Date(a.alertDate) - new Date(b.alertDate));
 
-  setTimeout(() => {
-    try {
-      liveCountryLayer.removeLayer(marker);
-      liveCountryMarkers = liveCountryMarkers.filter(m => m !== marker);
-      setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
-    } catch (e) {}
-  }, 180000);
-}
+  eventsArray.forEach(ev => {
+    const city = ev.data.trim();
+    const category = ev.category;
+    const title = ev.title;
+    
+    // Создаем уникальный ключ, чтобы не обрабатывать одно событие дважды
+    const eventKey = `${city}_${ev.alertDate}_${category}`;
+    if (processedEventKeys.has(eventKey)) return;
+    processedEventKeys.add(eventKey);
 
-function addLivePolygon(zoneName, label, delayMs = 0) {
-  ensureMap();
-  const zone = zoneIndex[zoneName];
-  if (!zone || !zone.polygon?.length) return false;
-
-  const polygon = L.polygon(zone.polygon, {
-    color: '#ff4d4d',
-    weight: 2,
-    fillColor: '#ff4d4d',
-    fillOpacity: 0.10,
-  }).bindPopup(`
-    <b>${zoneName}</b><br>
-    ${label}<br>
-    זמן מיגון: ${zone.countdown || '—'} שנ׳<br>
-    ${zone.en || ''}
-  `);
-  polygon.addTo(liveCountryLayer);
-  pulsePolygon(polygon);
-  animateFlightToPolygon(zoneName, zone, delayMs);
-  liveCountryPolygons.push(polygon);
-
-  polygon.on('click', () => polygon.openPopup());
-
-  setTimeout(() => {
-    try {
-      liveCountryLayer.removeLayer(polygon);
-      liveCountryPolygons = liveCountryPolygons.filter(p => p !== polygon);
-      setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
-    } catch (e) {}
-  }, 180000);
-
-  return true;
-}
-
-function animateMultiImpactFromSource(originKey, zoneNames, label) {
-  if (!map || !zoneNames?.length) return;
-
-  const validZones = zoneNames
-    .map(name => ({ name, zone: zoneIndex[name] }))
-    .filter(x => x.zone && x.zone.polygon?.length);
-
-  if (!validZones.length) return;
-
-  let source = [32.1, 39.5];
-  let trailColor = '#c084fc';
-  let rocketFill = '#a855f7';
-  let rocketStroke = '#c084fc';
-
-  if (originKey === 'lebanon') {
-    source = [33.45, 35.35];
-    trailColor = '#ffd166';
-    rocketFill = '#ffb703';
-    rocketStroke = '#ffd166';
-  } else if (originKey === 'gaza') {
-    source = [31.5, 34.45];
-    trailColor = '#ff7d7d';
-    rocketFill = '#ef4444';
-    rocketStroke = '#ff6b6b';
-  }
-
-  const centers = validZones.map(({ zone }) => polygonCenter(zone.polygon)).filter(Boolean);
-  const avgTarget = [
-    centers.reduce((s, p) => s + p[0], 0) / centers.length,
-    centers.reduce((s, p) => s + p[1], 0) / centers.length,
-  ];
-
-  const mainTrail = L.polyline([source], {
-    color: trailColor,
-    weight: 4,
-    opacity: 0.55,
-    dashArray: '10,8'
-  }).addTo(liveCountryLayer);
-
-  const mainGlow = L.polyline([source], {
-    color: trailColor,
-    weight: 10,
-    opacity: 0.08,
-    lineCap: 'round'
-  }).addTo(liveCountryLayer);
-
-  const rocketIcon = L.divIcon({
-    className: 'rocket-icon-wrapper',
-    html: `
-      <div style="position:relative; width:22px; height:22px; display:flex; align-items:center; justify-content:center;">
-        <div style="position:absolute; width:22px; height:22px; border-radius:50%; background:${rocketFill}; opacity:.18; filter:blur(6px);"></div>
-        <div style="position:relative; width:10px; height:10px; transform:rotate(45deg); background:${rocketFill}; border:2px solid ${rocketStroke}; border-radius:2px 10px 2px 10px; box-shadow:0 0 10px ${rocketFill};"></div>
-      </div>
-    `,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
-  });
-
-  const rocket = L.marker(source, { icon: rocketIcon }).bindPopup(`<b>${label}</b><br>מקור משוער: ${originKey}<br>פיצול ל-${validZones.length} אזורים`).addTo(liveCountryLayer);
-  activeAnimations.push(mainTrail, mainGlow, rocket);
-
-  const mainDuration = originKey === 'iran' ? 5200 : 2600;
-  let started = null;
-
-  function spawnBranches() {
-    validZones.forEach(({ name, zone }, idx) => {
-      const target = polygonCenter(zone.polygon);
-      if (!target) return;
-
-      const branchTrail = L.polyline([avgTarget], {
-        color: trailColor,
-        weight: 2.5,
-        opacity: 0.42,
-        dashArray: '6,6'
-      }).addTo(liveCountryLayer);
-
-      const branchGlow = L.polyline([avgTarget], {
-        color: trailColor,
-        weight: 7,
-        opacity: 0.05,
-        lineCap: 'round'
-      }).addTo(liveCountryLayer);
-
-      const branchRocket = L.circleMarker(avgTarget, {
-        radius: 4,
-        color: rocketStroke,
-        weight: 2,
-        fillColor: rocketFill,
-        fillOpacity: 1,
-      }).addTo(liveCountryLayer);
-
-      activeAnimations.push(branchTrail, branchGlow, branchRocket);
-
-      const branchDuration = 1200 + idx * 120;
-      let bStarted = null;
-
-      function branchStep(ts) {
-        if (!bStarted) bStarted = ts;
-        const progress = Math.min((ts - bStarted) / branchDuration, 1);
-        const lat = avgTarget[0] + (target[0] - avgTarget[0]) * progress;
-        const lon = avgTarget[1] + (target[1] - avgTarget[1]) * progress;
-        const pos = [lat, lon];
-        branchRocket.setLatLng(pos);
-        branchTrail.addLatLng(pos);
-        branchGlow.addLatLng(pos);
-
-        if (progress < 1) {
-          requestAnimationFrame(branchStep);
-          return;
-        }
-
-        const blast = L.circle(target, {
-          radius: 900,
-          color: rocketStroke,
-          weight: 2,
-          fillColor: rocketFill,
-          fillOpacity: 0.14,
-        }).addTo(liveCountryLayer);
-        activeAnimations.push(blast);
-
-        setTimeout(() => {
-          fadeAndRemoveLayer(branchRocket, 600, 0);
-          fadeAndRemoveLayer(branchTrail, 1800, 0);
-          fadeAndRemoveLayer(branchGlow, 2200, 0);
-          fadeAndRemoveLayer(blast, 1400, 0);
-        }, 250);
+    // КАТЕГОРИЯ 13: ОТБОЙ ТРЕВОГИ
+    if (category === 13) {
+      if (activeAlertsMap[city]) {
+        fadeAndRemoveLayer(activeAlertsMap[city], 1000, 0);
+        delete activeAlertsMap[city];
       }
-
-      setTimeout(() => requestAnimationFrame(branchStep), idx * 140);
-      addLivePolygon(name, label, 0, false);
-    });
-  }
-
-  function step(ts) {
-    if (!started) started = ts;
-    const progress = Math.min((ts - started) / mainDuration, 1);
-    const lat = source[0] + (avgTarget[0] - source[0]) * progress;
-    const lon = source[1] + (avgTarget[1] - source[1]) * progress;
-    const pos = [lat, lon];
-    rocket.setLatLng(pos);
-    mainTrail.addLatLng(pos);
-    mainGlow.addLatLng(pos);
-
-    if (progress < 1) {
-      requestAnimationFrame(step);
       return;
     }
 
-    const splitBlast = L.circle(avgTarget, {
-      radius: 1400,
-      color: rocketStroke,
-      weight: 2,
-      fillColor: rocketFill,
-      fillOpacity: 0.18,
-    }).addTo(liveCountryLayer);
-    activeAnimations.push(splitBlast);
+    // КАТЕГОРИИ 1 (Ракета) или 2 (БПЛА)
+    if (category === 1 || category === 2) {
+      if (activeAlertsMap[city]) return; // Если уже горит, не дублируем
 
-    spawnBranches();
+      const zone = zoneIndex[city];
+      if (zone && zone.polygon && zone.polygon.length > 0) {
+        const isDrone = category === 2;
+        const baseColor = isDrone ? '#f59e0b' : '#ff4d4d';
 
-    setTimeout(() => {
-      fadeAndRemoveLayer(rocket, 700, 0);
-      fadeAndRemoveLayer(mainTrail, 2200, 0);
-      fadeAndRemoveLayer(mainGlow, 2600, 0);
-      fadeAndRemoveLayer(splitBlast, 1600, 0);
-    }, 250);
-  }
+        const polygon = L.polygon(zone.polygon, {
+          color: baseColor,
+          weight: 2,
+          fillColor: baseColor,
+          fillOpacity: 0.15,
+        }).bindPopup(`
+          <b>${city}</b><br>
+          <span style="color:${baseColor}; font-weight:bold;">${title}</span><br>
+          זמן מיגון: ${zone.countdown || '—'} שנ׳
+        `);
+        
+        polygon.addTo(liveCountryLayer);
+        pulsePolygonCustom(polygon, category);
+        
+        // ЗАПУСКАЕМ АНИМАЦИЮ ПОЛЕТА
+        animateFlightToPolygon(city, zone, 0);
 
-  requestAnimationFrame(step);
-}
+        activeAlertsMap[city] = polygon;
 
-function handleLiveCountryEvent(payload) {
-  if (!payload?.cities?.length) return;
-  const label = payload.datetime || 'אירוע חדש';
+        // Фолбэк на случай, если Категория 13 не придет: удаляем через 5 минут
+        setTimeout(() => {
+          if (activeAlertsMap[city] === polygon) {
+            fadeAndRemoveLayer(polygon, 1800, 0);
+            delete activeAlertsMap[city];
+            updateMapCaption();
+          }
+        }, 300000);
 
-  const enriched = payload.cities.map(city => {
-    const zone = zoneIndex[city] || null;
-    const origin = zone ? detectEstimatedOrigin(city, zone) : 'unknown';
-    return { city, zone, origin };
-  });
-
-  const iranZones = enriched.filter(x => x.zone && x.origin === 'iran').map(x => x.city);
-  const lebanonZones = enriched.filter(x => x.zone && x.origin === 'lebanon').map(x => x.city);
-  const gazaZones = enriched.filter(x => x.zone && x.origin === 'gaza').map(x => x.city);
-  const otherZones = enriched.filter(x => !x.zone || x.origin === 'unknown').map(x => x.city);
-
-  if (iranZones.length >= 3) {
-    animateMultiImpactFromSource('iran', iranZones, label);
-  } else {
-    iranZones.forEach((city, idx) => addLivePolygon(city, label, idx * 350));
-  }
-
-  if (lebanonZones.length >= 3) {
-    animateMultiImpactFromSource('lebanon', lebanonZones, label);
-  } else {
-    lebanonZones.forEach((city, idx) => addLivePolygon(city, label, idx * 280));
-  }
-
-  if (gazaZones.length >= 3) {
-    animateMultiImpactFromSource('gaza', gazaZones, label);
-  } else {
-    gazaZones.forEach((city, idx) => addLivePolygon(city, label, idx * 280));
-  }
-
-  otherZones.forEach(city => {
-    const hasPolygon = addLivePolygon(city, label, 0);
-    if (!hasPolygon) {
-      const centroid = zoneCentroids[city] || fallbackCityCoords[city];
-      if (centroid) addLiveMarker(centroid[0], centroid[1], label, city);
+      } else {
+        // Если полигона нет в локальной базе — ставим маркер
+        const centroid = zoneCentroids[city] || fallbackCityCoords[city];
+        if (centroid) {
+          const isDrone = category === 2;
+          const mColor = isDrone ? '#f59e0b' : '#ff2d55';
+          const marker = L.circleMarker([centroid[0], centroid[1]], {
+            radius: 8,
+            color: mColor,
+            weight: 2,
+            fillColor: mColor,
+            fillOpacity: 0.9,
+          }).bindPopup(`<b>${city}</b><br>${title}`);
+          
+          marker.addTo(liveCountryLayer);
+          activeAlertsMap[city] = marker;
+          
+          setTimeout(() => {
+            if (activeAlertsMap[city] === marker) {
+              fadeAndRemoveLayer(marker, 1000, 0);
+              delete activeAlertsMap[city];
+              updateMapCaption();
+            }
+          }, 300000);
+        }
+      }
     }
   });
 
-  setText('mapCaption', `לייב ארצי פעיל · ${liveCountryPolygons.length} פוליגונים · ${liveCountryMarkers.length} סימונים`);
+  updateMapCaption();
 }
 
 function renderSimpleList(elementId, items, mapper) {
@@ -924,7 +759,8 @@ async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
 
   const minDate = datasetMeta?.min_date || '—';
-  const dbMaxDate = datasetMeta?.max_date || todayLocalISO();
+  const dbMaxDate = datasetMeta?.max_date || '—'; 
+  const actualToday = todayLocalISO(); 
   const refreshed = datasetMeta?.refreshed_at || '—';
 
   setText(
@@ -933,10 +769,10 @@ async function loadMeta() {
   );
 
   if (!document.getElementById('toDate').value) {
-    document.getElementById('toDate').value = dbMaxDate;
+    document.getElementById('toDate').value = actualToday;
   }
   if (!document.getElementById('fromDate').value) {
-    document.getElementById('fromDate').value = shiftDays(dbMaxDate, -29);
+    document.getElementById('fromDate').value = shiftDays(actualToday, -29);
   }
 }
 
@@ -954,16 +790,16 @@ async function loadCities() {
 
 function applyPreset() {
   const preset = document.getElementById('preset').value;
-  const maxDate = datasetMeta?.max_date || todayLocalISO();
-
+  const actualToday = todayLocalISO();
+  
   if (preset === 'all') {
-    document.getElementById('fromDate').value = datasetMeta?.min_date || maxDate;
-    document.getElementById('toDate').value = maxDate;
+    document.getElementById('fromDate').value = datasetMeta?.min_date || actualToday;
+    document.getElementById('toDate').value = actualToday;
     return;
   }
   const days = parseInt(preset, 10);
-  document.getElementById('toDate').value = maxDate;
-  document.getElementById('fromDate').value = shiftDays(maxDate, -(days - 1));
+  document.getElementById('toDate').value = actualToday;
+  document.getElementById('fromDate').value = shiftDays(actualToday, -(days - 1));
 }
 
 function renderSummary(data) {
@@ -1058,20 +894,18 @@ function connectLiveStream() {
         return;
       }
 
-      if (payload.type === 'all_clear') {
-        setText('liveStatus', `🟢 חזרה לשגרה: ${payload.cities?.join(', ') || '—'} · ${payload.datetime}`);
-        return;
+      // ПЕРЕДАЕМ НОВЫЙ МАССИВ В ОБРАБОТЧИК
+      if (Array.isArray(payload)) {
+        processNewFeedEvents(payload);
+        
+        // Выводим последний ивент в статус
+        const activeAlerts = payload.filter(p => p.category === 1 || p.category === 2);
+        if (activeAlerts.length > 0) {
+            const latest = activeAlerts[activeAlerts.length - 1];
+            setText('liveStatus', `🟢 אירוע לייב: ${latest.data} (${latest.title})`);
+        }
       }
 
-      handleLiveCountryEvent(payload);
-
-      const selectedCity = document.getElementById('citySelect').value.trim();
-      if (payload.cities && payload.cities.includes(selectedCity)) {
-        setText('liveStatus', `🟢 התקבל אירוע חדש עבור ${selectedCity} · ${payload.datetime}`);
-        await loadDashboard();
-      } else {
-        setText('liveStatus', `🟢 אירוע לייב חדש: ${payload.cities?.slice(0,3).join(', ') || '—'}`);
-      }
     } catch (err) {
       console.error('stream message error', err);
     }
@@ -1126,7 +960,6 @@ class EventRecord:
     cities: list[str]
     threat: int
 
-
 class DataStore:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -1143,8 +976,8 @@ class DataStore:
         self.max_date: str | None = None
         self.zones: dict[str, dict[str, Any]] = {}
         self.zone_centroids: dict[str, tuple[float, float]] = {}
+        
         self.live_alerts: list[dict[str, Any]] = []
-        self.live_seen_ids: set[str] = set()
         self.last_live_refresh = 0.0
 
     def ensure_loaded(self, force: bool = False) -> None:
@@ -1208,12 +1041,10 @@ class DataStore:
             return
 
         req = Request(
-            OREF_ALERTS_HISTORY_URL,
+            SNAPSHOT_URL,
             headers={
                 "User-Agent": "Mozilla/5.0",
                 "Accept": "application/json, text/plain, */*",
-                "Referer": "https://www.oref.org.il/heb",
-                "X-Requested-With": "XMLHttpRequest",
             },
         )
 
@@ -1226,48 +1057,48 @@ class DataStore:
                 return
 
             data = json.loads(raw)
-            self.live_alerts = self._extract_live_alerts_from_oref_history(data)[-LIVE_MAX_ITEMS:]
+            # Извлекаем тревоги по новой логике
+            alerts = self._extract_live_alerts_from_snapshot(data)
+            self.live_alerts = alerts
             self.last_live_refresh = now
         except Exception as e:
-            print("oref live refresh error:", e)
+            print("snapshot refresh error:", e)
             self.last_live_refresh = now
 
-    def _extract_live_alerts_from_oref_history(self, data: Any) -> list[dict[str, Any]]:
-        if not isinstance(data, list):
-            return []
-
+    def _extract_live_alerts_from_snapshot(self, data: Any) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
 
-            title = str(item.get("title") or "").strip()
-            city_name = self._normalize_zone_name(str(item.get("data") or "").strip())
-            alert_date = str(item.get("alertDate") or "").strip()
-            category = item.get("category")
-
-            if not city_name or not alert_date or category is None:
-                continue
-
-            if category == 13 or title == "האירוע הסתיים":
-                event_type = "all_clear"
-            elif category in (1, 2, 4):
-                event_type = "alert"
-            else:
-                continue
-
-            results.append({
-                "external_id": f"{alert_date}|{city_name}|{category}",
-                "city": city_name,
-                "cities": [city_name],
-                "alert_type": title,
-                "category": category,
-                "source": "oref_history_live",
-                "created_at": alert_date,
-                "event_type": event_type,
-            })
-
-        results.sort(key=lambda x: (x["created_at"], x["city"]))
+        if isinstance(data, dict) and "events" in data:
+            for event in data.get("events", []):
+                # Нас интересуют только "alert" (игнорируем социалки и самолеты)
+                if event.get("eventType") == "alert":
+                    props = event.get("properties", {})
+                    city_he = props.get("cityHebrew")
+                    
+                    if not city_he:
+                        continue
+                        
+                    city_name = str(city_he).strip()
+                    alert_state = props.get("alertState", "")
+                    alert_type = props.get("alertType", "")
+                    title = props.get("title", "")
+                    alert_date = event.get("time", "")
+                    
+                    # ОПРЕДЕЛЯЕМ КАТЕГОРИЮ
+                    if alert_state == "cleared" or "הסתיים" in title:
+                        category = 13 # Отбой
+                    elif "כלי טיס" in alert_type or "UAV" in alert_type:
+                        category = 2  # БПЛА
+                    else:
+                        category = 1  # Ракеты
+                        
+                    results.append({
+                        "alertDate": alert_date,
+                        "title": title if title else alert_type,
+                        "data": city_name,
+                        "category": category
+                    })
+                    
         return results
 
     def _build_indexes(self, raw: Any) -> None:
@@ -1413,14 +1244,11 @@ class DataStore:
             "refreshed_at": refreshed_at,
         }
 
-
 store = DataStore()
-
 
 def normalize_city(city: str) -> str:
     city = city.strip()
     return CITY_ALIASES.get(city, city)
-
 
 def daterange_days(start: str, end: str) -> list[str]:
     s = datetime.strptime(start, "%Y-%m-%d")
@@ -1474,7 +1302,7 @@ def api_city_stats():
         return jsonify({"error": f"city not found: {city}"}), 404
 
     start = request.args.get("from") or store.min_date
-    end = request.args.get("to") or store.max_date
+    end = request.args.get("to") or datetime.now(TZ).strftime("%Y-%m-%d")
     if not start or not end:
         return jsonify({"error": "date range unavailable"}), 400
     if start > end:
@@ -1487,7 +1315,7 @@ def api_city_stats():
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
 
-    today_date = store.max_date
+    today_date = datetime.now(TZ).strftime("%Y-%m-%d")
     last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
     last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
 
@@ -1495,124 +1323,79 @@ def api_city_stats():
     week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_date)
     month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_date)
 
-    hourly_distribution = []
-    for h in range(24):
-        hour_label = f"{h:02d}:00"
-        hourly_distribution.append({"hour": hour_label, "count": hourly_counter.get(hour_label, 0)})
+    best_hour = "—"
+    if hourly_counter:
+        best_hour = max(hourly_counter.items(), key=lambda x: x[1])[0]
 
-    top_hours = sorted(hourly_distribution, key=lambda x: (-x["count"], x["hour"]))[:5]
-    best_recent_hour = top_hours[0] if top_hours else {"hour": "—", "count": 0}
+    best_weekday_name = "—"
+    best_weekday_hour = "—"
+    reason = "אין מספיק נתונים לאומדן סטטיסטי."
 
-    weekday_scores = []
-    for weekday, hour_counter in weekday_hourly.items():
-        total = sum(hour_counter.values())
-        if total > 0:
-            weekday_scores.append((weekday, total))
-    weekday_scores.sort(key=lambda x: (-x[1], x[0]))
-
-    best_weekday = WEEKDAY_NAMES_HE.get(weekday_scores[0][0], "—") if weekday_scores else "—"
-    weekday_score = weekday_scores[0][1] if weekday_scores else 0
+    if weekday_hourly:
+        best_day = max(weekday_hourly.keys(), key=lambda d: sum(weekday_hourly[d].values()))
+        best_weekday_name = WEEKDAY_NAMES_HE.get(str(best_day), "—")
+        if weekday_hourly[best_day]:
+            best_weekday_hour = max(weekday_hourly[best_day].items(), key=lambda x: x[1])[0]
+            reason = f"מבוסס על היסטוריית האזעקות, נראה שהסבירות הגבוהה ביותר לירי היא ב{best_weekday_name} סביב השעה {best_weekday_hour}."
 
     recent_events = []
-    for event in reversed(store.events):
-        if city in event.cities:
+    for ev in reversed(store.events):
+        if city in ev.cities:
             recent_events.append({
-                "datetime": datetime.fromtimestamp(event.ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                "date": event.date,
-                "hour": event.hour,
+                "datetime": datetime.fromtimestamp(ev.ts, tz=TZ).strftime("%d/%m/%Y %H:%M:%S"),
+                "date": ev.date,
+                "hour": ev.hour
             })
-        if len(recent_events) >= 12:
-            break
+            if len(recent_events) >= 15:
+                break
 
-    prediction_summary = {
-        "best_hour": best_recent_hour["hour"],
-        "score": best_recent_hour["count"],
-        "best_weekday": best_weekday,
-        "weekday_score": weekday_score,
-        "reason": f"השעה {best_recent_hour['hour']} בולטת סטטיסטית עבור {city}. זה אינו חיזוי אמיתי אלא סיכום דפוסים מהעבר.",
-    }
+    hourly_dist = [{"hour": f"{h:02d}:00", "count": hourly_counter.get(f"{h:02d}:00", 0)} for h in range(24)]
 
     return jsonify({
-        "dataset_max_date": store.max_date,
-        "dataset_min_date": store.min_date,
         "city": city,
-        "daily": daily_rows,
-        "hourly_distribution": hourly_distribution,
-        "top_hours": top_hours,
-        "recent_events": recent_events,
         "summary": {
             "today": today_val,
-            "today_date": today_date,
             "last_7_days": week_val,
             "last_30_days": month_val,
             "total_in_range": total_in_range,
-            "best_recent_hour": best_recent_hour,
-            "prediction": prediction_summary,
+            "today_date": today_date,
+            "best_recent_hour": {"hour": best_hour},
+            "prediction": {
+                "best_hour": best_hour,
+                "best_weekday": best_weekday_name,
+                "reason": reason
+            }
         },
+        "daily": daily_rows,
+        "hourly_distribution": hourly_dist,
+        "recent_events": recent_events
     })
 
 
 @app.get("/api/stream")
-def api_stream() -> Response:
-    @stream_with_context
+def api_stream():
+    """
+    Server-Sent Events (SSE) endpoint for Live Alerts.
+    """
     def generate():
-        sent_ids: set[str] = set()
-
+        # Отправляем начальный heartbeat при подключении
+        yield f"data: {json.dumps({'type': 'heartbeat', 'server_time': datetime.now(TZ).strftime('%H:%M:%S')})}\n\n"
+        
         while True:
-            store.ensure_loaded()
-            store.refresh_live_snapshot()
-
-            current_ids: set[str] = set()
-
-            for item in store.live_alerts:
-                external_id = item["external_id"]
-                current_ids.add(external_id)
-
-                if external_id in sent_ids:
-                    continue
-
-                created_at = item.get("created_at")
-                dt_text = created_at if created_at else datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-                payload = {
-                    "type": item.get("event_type", "alert"),
-                    "ts": int(time.time()),
-                    "cities": item["cities"],
-                    "datetime": dt_text,
-                    "external_id": external_id,
-                    "alert_type": item.get("alert_type"),
-                    "category": item.get("category"),
-                    "source": item.get("source"),
-                }
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}"
-                sent_ids.add(external_id)
-
-            sent_ids = current_ids.copy()
-
-            if not current_ids:
-                heartbeat = {
-                    "type": "heartbeat",
-                    "server_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}\n\n"
-
             time.sleep(STREAM_POLL_SECONDS)
+            store.refresh_live_snapshot()
+            
+            alerts = store.live_alerts
+            if alerts:
+                yield f"data: {json.dumps(alerts)}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'heartbeat', 'server_time': datetime.now(TZ).strftime('%H:%M:%S')})}\n\n"
 
-    return Response(
-        generate(),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 
 if __name__ == "__main__":
-    import os
-
-    store.ensure_loaded(force=True)
-    port = int(os.environ.get("PORT", 5000))
-    print(f"Iron Monitor Live ready: http://127.0.0.1:{port}")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    print("Starting Iron Monitor Live...")
+    # Загружаем данные до запуска сервера
+    store.ensure_loaded()
+    app.run(host="0.0.0.0", port=5000, threaded=True)
