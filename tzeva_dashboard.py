@@ -430,14 +430,6 @@ function polygonCenter(points) {
   return [lat / points.length, lon / points.length];
 }
 
-function animationDurationByCountdown(countdown) {
-  const cd = Number(countdown || 0);
-  if (cd >= 60) return 6500;
-  if (cd >= 30) return 4200;
-  if (cd >= 15) return 2600;
-  return 1600;
-}
-
 function detectEstimatedOrigin(zoneName, zone) {
   const countdown = Number(zone?.countdown || 0);
   const center = zone?.polygon?.length ? polygonCenter(zone.polygon) : null;
@@ -451,6 +443,13 @@ function detectEstimatedOrigin(zoneName, zone) {
   if (countdown >= 30) return 'iran';
   if (countdown <= 15) return 'lebanon';
   return 'unknown';
+}
+
+function animationDurationByOrigin(origin) {
+  if (origin === 'iran') return 240000; // 4 минуты (240 сек)
+  if (origin === 'lebanon') return 30000; // 30 секунд
+  if (origin === 'gaza') return 45000; // 45 секунд
+  return 30000; // По умолчанию 30 сек
 }
 
 function originStyle(origin) {
@@ -515,7 +514,8 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
     start = [target[0], target[1] + 1.8];
   }
 
-  const duration = animationDurationByCountdown(zone.countdown);
+  // Используем новую функцию длительности полета
+  const duration = animationDurationByOrigin(origin);
 
   const trail = L.polyline([start], {
     color: style.trail,
@@ -688,13 +688,14 @@ function processNewFeedEvents(eventsArray) {
         
         animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0);
 
+        // Увеличили время удержания маркера, чтобы ракета успела долететь (особенно из Ирана)
         setTimeout(() => {
           if (activeAlertsMap[city] === createdLayer) {
             fadeAndRemoveLayer(createdLayer, 1800, 0);
             delete activeAlertsMap[city];
             updateMapCaption();
           }
-        }, 300000);
+        }, 360000); // 6 минут (360 000 мс)
       }
     }
   });
@@ -1070,6 +1071,9 @@ class DataStore:
                     alert_type = props.get("alertType", "")
                     title = props.get("title", "")
                     alert_date = event.get("time", "")
+                    
+                    if "Expected" in alert_type or "צפויות" in alert_type:
+                        continue
                     
                     location = event.get("location")
                     lat, lng = None, None
