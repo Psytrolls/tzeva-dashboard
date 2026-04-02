@@ -299,6 +299,10 @@ let zoneCentroids = {};
 let hasFittedMap = false;
 let isInitialStreamLoad = true;
 
+// Лимит для защиты от лагов при массивных обстрелах
+const MAX_CONCURRENT_FLIGHTS = 12;
+let activeFlightsCount = 0;
+
 const fallbackCityCoords = {
   "אשקלון": [31.6688, 34.5743],
   "אשדוד": [31.8014, 34.6435],
@@ -400,6 +404,7 @@ function clearActiveAnimations() {
     try { map.removeLayer(layer); } catch (e) {}
   }
   activeAnimations = [];
+  activeFlightsCount = 0; // Сбрасываем счетчик ракет
 }
 
 function fadeAndRemoveLayer(layer, durationMs = 1800, targetOpacity = 0) {
@@ -454,7 +459,7 @@ function detectEstimatedOrigin(zoneName, zone) {
   if (countdown >= 60) return 'iran';
   if (lat !== null) {
     if (lat >= 32.8) return 'lebanon';
-    if (lat <= 31.6) return 'gaza'; // Технически газу мы фильтруем, но оставляем на всякий
+    if (lat <= 31.6) return 'gaza'; 
   }
   if (countdown >= 30) return 'iran';
   if (countdown <= 15) return 'lebanon';
@@ -511,6 +516,7 @@ function originStyle(origin, isDrone = false) {
 
 function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
   if (!map || !zone?.polygon?.length) return;
+  if (activeFlightsCount >= MAX_CONCURRENT_FLIGHTS) return; // ПРОПУСКАЕМ ЕСЛИ СЛИШКОМ МНОГО РАКЕТ
 
   const target = polygonCenter(zone.polygon);
   if (!target) return;
@@ -523,11 +529,10 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
   let duration = 0;
 
   if (isDrone) {
-    // Рандомно с Востока / Северо-Востока
     const angle = Math.random() * (Math.PI / 2); 
     const dist = 0.2 + Math.random() * 0.2; 
     start = [target[0] + Math.sin(angle) * dist, target[1] + Math.cos(angle) * dist];
-    duration = 3000; // Ровно 3 секунды для дрона
+    duration = 3000; 
   } else {
     if (origin === 'iran') {
       const rLat = 32.5 + (Math.random() - 0.5) * 4;
@@ -542,6 +547,8 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     }
     duration = animationDurationByOrigin(origin);
   }
+
+  activeFlightsCount++; // УВЕЛИЧИВАЕМ СЧЕТЧИК ПОЛЕТОВ
 
   const trail = L.polyline([start], {
     color: style.trail,
@@ -618,11 +625,7 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     rocket.setLatLng(pos);
     
     trailLatLngs.push(pos);
-    
-    // Короткий хвост для дрона
-    if (isDrone && trailLatLngs.length > 5) {
-        trailLatLngs.shift();
-    }
+    if (isDrone && trailLatLngs.length > 5) trailLatLngs.shift();
     
     trail.setLatLngs(trailLatLngs);
     glowTrail.setLatLngs(trailLatLngs);
@@ -655,6 +658,11 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
       fadeAndRemoveLayer(trail, 2200, 0);
       fadeAndRemoveLayer(glowTrail, 2600, 0);
       fadeAndRemoveLayer(blast, 1600, 0);
+      
+      // ОСВОБОЖДАЕМ СЛОТ ДЛЯ НОВОЙ РАКЕТЫ
+      activeFlightsCount--;
+      if (activeFlightsCount < 0) activeFlightsCount = 0;
+      
     }, 400);
   }
 
@@ -710,7 +718,6 @@ function processNewFeedEvents(eventsArray, skipAnimations = false) {
     const eventKey = `${city}_${ev.alertDate}_${category}`;
     if (processedEventKeys.has(eventKey)) return;
     
-    // ФИЛЬТР ГАЗЫ В JS (Дополнительный слой защиты)
     const zone = zoneIndex[city];
     const origin = detectEstimatedOrigin(city, zone);
     if (origin === 'gaza') return;
@@ -766,15 +773,13 @@ function processNewFeedEvents(eventsArray, skipAnimations = false) {
         
         applyPolygonStyle(layerToUse, category);
         
-        // Проверяем свежесть события
         let eventTime = new Date(ev.alertDate);
         if (isNaN(eventTime.getTime())) {
             eventTime = new Date(ev.alertDate.replace(' ', 'T'));
         }
         const ageMs = now - eventTime.getTime();
-        const isOldEvent = ageMs > 180000; // 3 минуты
+        const isOldEvent = ageMs > 180000; 
 
-        // Запускаем ракету только если это не первая загрузка и событие свежее
         if ((category === 1 || category === 2) && !skipAnimations && !isOldEvent) {
             animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0, category);
         }
@@ -830,7 +835,7 @@ function renderHourlyChart(items) {
       responsive: true,
       plugins: { legend: { labels: { color: '#dbe5ff' } } },
       scales: {
-        x: { ticks: { color: '#aebee4', maxRotation: 90, minRotation: 90, autoSkip: false }, grid: { color: 'rgba(255,255,255,.05)' } },
+        x: { ticks: { color: '#aebee4' }, grid: { color: 'rgba(255,255,255,.05)' } },
         y: { beginAtZero: true, ticks: { color: '#aebee4' }, grid: { color: 'rgba(255,255,255,.05)' } },
       }
     }
@@ -1278,7 +1283,7 @@ class DataStore:
                 centroids[name] = centroid
                 centroids[raw_name] = centroid
 
-        for alias, canonical in ZONE_NAME_ALIASES.items():
+        for alias, canonical in ZONE_NAME_ALIitems():
             if canonical in parsed:
                 parsed[alias] = parsed[canonical]
                 if canonical in centroids: centroids[alias] = centroids[canonical]
