@@ -446,7 +446,7 @@ function detectEstimatedOrigin(zoneName, zone) {
 }
 
 function animationDurationByOrigin(origin) {
-  if (origin === 'iran') return 240000; // 4 минуты (240 сек)
+  if (origin === 'iran') return 270000; // 4.5 минуты (270 сек)
   if (origin === 'lebanon') return 30000; // 30 секунд
   if (origin === 'gaza') return 45000; // 45 секунд
   return 30000; // По умолчанию 30 сек
@@ -835,7 +835,9 @@ function renderSummary(data) {
   `);
 }
 
+// ОЧИСТКА КАРТЫ ПРИ ЗАГРУЗКЕ НОВЫХ СТАТОВ
 async function loadDashboard() {
+  clearLiveLayers(); // Убираем анимации при смене фокуса
   let city = document.getElementById('citySelect').value.trim();
   const from = document.getElementById('fromDate').value;
   const to = document.getElementById('toDate').value;
@@ -847,14 +849,13 @@ async function loadDashboard() {
 
   if (!city) return;
 
-  const safeFrom = document.getElementById('fromDate').value;
-  const safeTo = document.getElementById('toDate').value;
-  const params = new URLSearchParams({ city, from: safeFrom, to: safeTo });
+  const params = new URLSearchParams({ city, from, to });
   const data = await getJson(`/api/city-stats?${params.toString()}`);
   renderSummary(data);
 }
 
 async function refreshBackend() {
+  clearLiveLayers(); // Очистка при рефреше
   setText('datasetMeta', 'מרענן נתונים...');
   await getJson('/api/refresh', { method: 'POST' });
   await loadMeta();
@@ -888,7 +889,6 @@ function connectLiveStream() {
 
       if (Array.isArray(payload)) {
         processNewFeedEvents(payload);
-        
         const activeAlerts = payload.filter(p => p.category === 1 || p.category === 2);
         if (activeAlerts.length > 0) {
             const latest = activeAlerts[activeAlerts.length - 1];
@@ -995,10 +995,7 @@ class DataStore:
 
         req = Request(
             DATA_URL,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json, text/plain, */*",
-            },
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"},
         )
         with urlopen(req, timeout=60) as resp:
             raw_bytes = resp.read()
@@ -1032,10 +1029,7 @@ class DataStore:
 
         req = Request(
             SNAPSHOT_URL,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json, text/plain, */*",
-            },
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"},
         )
 
         try:
@@ -1072,14 +1066,21 @@ class DataStore:
                     title = props.get("title", "")
                     alert_date = event.get("time", "")
                     
+                    # 1. ОТСЕКАЕМ ПРЕДВАРИТЕЛЬНЫЕ (ФАНТОМЫ)
                     if "Expected" in alert_type or "צפויות" in alert_type:
                         continue
-                    
+
                     location = event.get("location")
                     lat, lng = None, None
                     if location and isinstance(location, dict):
                         lat = location.get("lat")
                         lng = location.get("lng")
+                    
+                    # 2. ФИЛЬТР ГАЗЫ (Координаты Юга)
+                    if lat is not None and lat < 31.65 and lng < 34.65:
+                        continue
+                    if "עוטף עזה" in title or "Gaza Envelope" in title:
+                        continue
                     
                     if alert_state == "cleared" or "הסתיים" in title:
                         category = 13 
@@ -1113,23 +1114,18 @@ class DataStore:
         seen: set[tuple[int, int, tuple[str, ...]]] = set()
 
         for item in raw:
-            if not isinstance(item, list) or len(item) < 4:
-                continue
+            if not isinstance(item, list) or len(item) < 4: continue
             threat = item[1]
-            if threat not in DEFAULT_THREAT_TYPES:
-                continue
+            if threat not in DEFAULT_THREAT_TYPES: continue
             cities = item[2]
             ts = item[3]
-            if not isinstance(cities, list) or not isinstance(ts, int):
-                continue
+            if not isinstance(cities, list) or not isinstance(ts, int): continue
 
             cities_clean = sorted({str(c).strip() for c in cities if str(c).strip()})
-            if not cities_clean:
-                continue
+            if not cities_clean: continue
 
             key = (ts, threat, tuple(cities_clean))
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
 
             dt = datetime.fromtimestamp(ts, tz=TZ)
@@ -1142,10 +1138,8 @@ class DataStore:
 
             events.append(EventRecord(ts=ts, date=date, week=week, month=month, hour=hour, weekday=weekday, cities=cities_clean, threat=threat))
 
-            if min_date is None or date < min_date:
-                min_date = date
-            if max_date is None or date > max_date:
-                max_date = date
+            if min_date is None or date < min_date: min_date = date
+            if max_date is None or date > max_date: max_date = date
 
             for city in cities_clean:
                 city_set.add(city)
@@ -1173,26 +1167,18 @@ class DataStore:
         centroids: dict[str, tuple[float, float]] = {}
 
         for raw_name, payload in zones.items():
-            if not isinstance(raw_name, str) or not isinstance(payload, dict):
-                continue
-
+            if not isinstance(raw_name, str) or not isinstance(payload, dict): continue
             name = self._normalize_zone_name(raw_name)
             polygon = payload.get("polygon") or []
             latlngs: list[list[float]] = []
             for point in polygon:
                 if isinstance(point, list) and len(point) >= 2:
-                    lon = point[0]
-                    lat = point[1]
+                    lon, lat = point[0], point[1]
                     if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
                         latlngs.append([float(lat), float(lon)])
 
             centroid = self._polygon_centroid(latlngs) if latlngs else CITY_COORDS.get(name)
-            zone_entry = {
-                "id": payload.get("id"),
-                "en": payload.get("en"),
-                "countdown": payload.get("countdown"),
-                "polygon": latlngs,
-            }
+            zone_entry = {"id": payload.get("id"), "en": payload.get("en"), "countdown": payload.get("countdown"), "polygon": latlngs}
             parsed[name] = zone_entry
             parsed[raw_name] = zone_entry
             if centroid:
@@ -1202,23 +1188,19 @@ class DataStore:
         for alias, canonical in ZONE_NAME_ALIASES.items():
             if canonical in parsed:
                 parsed[alias] = parsed[canonical]
-                if canonical in centroids:
-                    centroids[alias] = centroids[canonical]
+                if canonical in centroids: centroids[alias] = centroids[canonical]
 
         self.zones = parsed
         self.zone_centroids = centroids
 
     @staticmethod
     def _normalize_zone_name(name: str) -> str:
-        normalized = " ".join(name.strip().split())
-        normalized = normalized.replace("–", "-").replace("—", "-")
-        normalized = normalized.replace(" - ", "-")
+        normalized = " ".join(name.strip().split()).replace("–", "-").replace("—", "-").replace(" - ", "-")
         return ZONE_NAME_ALIASES.get(normalized, normalized)
 
     @staticmethod
     def _polygon_centroid(points: list[list[float]]) -> tuple[float, float] | None:
-        if not points:
-            return None
+        if not points: return None
         lat = sum(p[0] for p in points) / len(points)
         lon = sum(p[1] for p in points) / len(points)
         return (lat, lon)
@@ -1228,18 +1210,11 @@ class DataStore:
         if META_FILE.exists():
             try:
                 cached = META_FILE.read_text(encoding="utf-8").strip()
-                if cached:
-                    refreshed_at = json.loads(cached).get("refreshed_at")
-            except Exception:
-                refreshed_at = None
-
+                if cached: refreshed_at = json.loads(cached).get("refreshed_at")
+            except Exception: pass
         return {
-            "total_events": len(self.events),
-            "total_cities": len(self.all_cities),
-            "total_zones": len(self.zones),
-            "min_date": self.min_date,
-            "max_date": self.max_date,
-            "refreshed_at": refreshed_at,
+            "total_events": len(self.events), "total_cities": len(self.all_cities), "total_zones": len(self.zones),
+            "min_date": self.min_date, "max_date": self.max_date, "refreshed_at": refreshed_at,
         }
 
 store = DataStore()
@@ -1258,140 +1233,85 @@ def daterange_days(start: str, end: str) -> list[str]:
         cur += timedelta(days=1)
     return days
 
-
 @app.get("/")
 def index() -> Response:
     store.ensure_loaded()
     return Response(HTML, mimetype="text/html")
-
 
 @app.get("/api/meta")
 def api_meta():
     store.ensure_loaded()
     return jsonify(store.meta())
 
-
 @app.post("/api/refresh")
 def api_refresh():
     store.ensure_loaded(force=True)
     return jsonify({"ok": True, **store.meta()})
-
 
 @app.get("/api/cities")
 def api_cities():
     store.ensure_loaded()
     return jsonify({"cities": store.all_cities})
 
-
 @app.get("/api/zones")
 def api_zones():
     store.ensure_loaded()
     return jsonify({"zones": store.zones, "centroids": {k: [v[0], v[1]] for k, v in store.zone_centroids.items()}})
 
-
 @app.get("/api/city-stats")
 def api_city_stats():
     store.ensure_loaded()
-
     city = normalize_city(request.args.get("city", ""))
-    if not city:
-        return jsonify({"error": "city is required"}), 400
-    if city not in store.city_daily:
-        return jsonify({"error": f"city not found: {city}"}), 404
-
+    if not city: return jsonify({"error": "city is required"}), 400
+    if city not in store.city_daily: return jsonify({"error": f"city not found: {city}"}), 404
     start = request.args.get("from") or store.min_date
     end = request.args.get("to") or datetime.now(TZ).strftime("%Y-%m-%d")
-    if not start or not end:
-        return jsonify({"error": "date range unavailable"}), 400
-    if start > end:
-        return jsonify({"error": "from must be <= to"}), 400
-
     daily_counter = store.city_daily[city]
     hourly_counter = store.city_hourly.get(city, Counter())
     weekday_hourly = store.city_weekday_hourly.get(city, {})
-
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
-
     today_date = datetime.now(TZ).strftime("%Y-%m-%d")
     last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
     last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
-
     today_val = daily_counter.get(today_date, 0)
     week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_date)
     month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_date)
-
-    best_hour = "—"
-    if hourly_counter:
-        best_hour = max(hourly_counter.items(), key=lambda x: x[1])[0]
-
+    best_hour = max(hourly_counter.items(), key=lambda x: x[1])[0] if hourly_counter else "—"
     best_weekday_name = "—"
-    best_weekday_hour = "—"
     reason = "אין מספיק נתונים לאומדן סטטיסטי."
-
     if weekday_hourly:
         best_day = max(weekday_hourly.keys(), key=lambda d: sum(weekday_hourly[d].values()))
         best_weekday_name = WEEKDAY_NAMES_HE.get(str(best_day), "—")
         if weekday_hourly[best_day]:
             best_weekday_hour = max(weekday_hourly[best_day].items(), key=lambda x: x[1])[0]
             reason = f"מבוסס על היסטוריית האזעקות, נראה שהסבירות הגבוהה ביותר לירי היא ב{best_weekday_name} סביב השעה {best_weekday_hour}."
-
     recent_events = []
     for ev in reversed(store.events):
         if city in ev.cities:
-            recent_events.append({
-                "datetime": datetime.fromtimestamp(ev.ts, tz=TZ).strftime("%d/%m/%Y %H:%M:%S"),
-                "date": ev.date,
-                "hour": ev.hour
-            })
-            if len(recent_events) >= 15:
-                break
-
-    hourly_dist = [{"hour": f"{h:02d}:00", "count": hourly_counter.get(f"{h:02d}:00", 0)} for h in range(24)]
-
+            recent_events.append({"datetime": datetime.fromtimestamp(ev.ts, tz=TZ).strftime("%d/%m/%Y %H:%M:%S"), "date": ev.date, "hour": ev.hour})
+            if len(recent_events) >= 15: break
     return jsonify({
         "city": city,
         "summary": {
-            "today": today_val,
-            "last_7_days": week_val,
-            "last_30_days": month_val,
-            "total_in_range": total_in_range,
-            "today_date": today_date,
-            "best_recent_hour": {"hour": best_hour},
-            "prediction": {
-                "best_hour": best_hour,
-                "best_weekday": best_weekday_name,
-                "reason": reason
-            }
+            "today": today_val, "last_7_days": week_val, "last_30_days": month_val, "total_in_range": total_in_range, "today_date": today_date,
+            "best_recent_hour": {"hour": best_hour}, "prediction": {"best_hour": best_hour, "best_weekday": best_weekday_name, "reason": reason}
         },
-        "daily": daily_rows,
-        "hourly_distribution": hourly_dist,
+        "daily": daily_rows, "hourly_distribution": [{"hour": f"{h:02d}:00", "count": hourly_counter.get(f"{h:02d}:00", 0)} for h in range(24)],
         "recent_events": recent_events
     })
 
-
 @app.get("/api/stream")
 def api_stream():
-    """
-    Server-Sent Events (SSE) endpoint for Live Alerts.
-    """
     def generate():
         yield f"data: {json.dumps({'type': 'heartbeat', 'server_time': datetime.now(TZ).strftime('%H:%M:%S')})}\n\n"
-        
         while True:
             time.sleep(STREAM_POLL_SECONDS)
             store.refresh_live_snapshot()
-            
-            alerts = store.live_alerts
-            if alerts:
-                yield f"data: {json.dumps(alerts)}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'heartbeat', 'server_time': datetime.now(TZ).strftime('%H:%M:%S')})}\n\n"
-
+            if store.live_alerts: yield f"data: {json.dumps(store.live_alerts)}\n\n"
+            else: yield f"data: {json.dumps({'type': 'heartbeat', 'server_time': datetime.now(TZ).strftime('%H:%M:%S')})}\n\n"
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
-
 if __name__ == "__main__":
-    print("Starting Iron Monitor Live...")
     store.ensure_loaded()
     app.run(host="0.0.0.0", port=5000, threaded=True)
