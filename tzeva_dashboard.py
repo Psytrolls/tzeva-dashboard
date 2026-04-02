@@ -635,7 +635,7 @@ function addLivePolygon(zoneName, label, delayMs = 0) {
     color: '#ff4d4d',
     weight: 2,
     fillColor: '#ff4d4d',
-    fillOpacity: 0.18,
+    fillOpacity: 0.10,
   }).bindPopup(`
     <b>${zoneName}</b><br>
     ${label}<br>
@@ -660,18 +660,214 @@ function addLivePolygon(zoneName, label, delayMs = 0) {
   return true;
 }
 
+function animateMultiImpactFromSource(originKey, zoneNames, label) {
+  if (!map || !zoneNames?.length) return;
+
+  const validZones = zoneNames
+    .map(name => ({ name, zone: zoneIndex[name] }))
+    .filter(x => x.zone && x.zone.polygon?.length);
+
+  if (!validZones.length) return;
+
+  let source = [32.1, 39.5];
+  let trailColor = '#c084fc';
+  let rocketFill = '#a855f7';
+  let rocketStroke = '#c084fc';
+
+  if (originKey === 'lebanon') {
+    source = [33.45, 35.35];
+    trailColor = '#ffd166';
+    rocketFill = '#ffb703';
+    rocketStroke = '#ffd166';
+  } else if (originKey === 'gaza') {
+    source = [31.5, 34.45];
+    trailColor = '#ff7d7d';
+    rocketFill = '#ef4444';
+    rocketStroke = '#ff6b6b';
+  }
+
+  const centers = validZones.map(({ zone }) => polygonCenter(zone.polygon)).filter(Boolean);
+  const avgTarget = [
+    centers.reduce((s, p) => s + p[0], 0) / centers.length,
+    centers.reduce((s, p) => s + p[1], 0) / centers.length,
+  ];
+
+  const mainTrail = L.polyline([source], {
+    color: trailColor,
+    weight: 4,
+    opacity: 0.55,
+    dashArray: '10,8'
+  }).addTo(liveCountryLayer);
+
+  const mainGlow = L.polyline([source], {
+    color: trailColor,
+    weight: 10,
+    opacity: 0.08,
+    lineCap: 'round'
+  }).addTo(liveCountryLayer);
+
+  const rocketIcon = L.divIcon({
+    className: 'rocket-icon-wrapper',
+    html: `
+      <div style="position:relative; width:22px; height:22px; display:flex; align-items:center; justify-content:center;">
+        <div style="position:absolute; width:22px; height:22px; border-radius:50%; background:${rocketFill}; opacity:.18; filter:blur(6px);"></div>
+        <div style="position:relative; width:10px; height:10px; transform:rotate(45deg); background:${rocketFill}; border:2px solid ${rocketStroke}; border-radius:2px 10px 2px 10px; box-shadow:0 0 10px ${rocketFill};"></div>
+      </div>
+    `,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
+
+  const rocket = L.marker(source, { icon: rocketIcon }).bindPopup(`<b>${label}</b><br>מקור משוער: ${originKey}<br>פיצול ל-${validZones.length} אזורים`).addTo(liveCountryLayer);
+  activeAnimations.push(mainTrail, mainGlow, rocket);
+
+  const mainDuration = originKey === 'iran' ? 5200 : 2600;
+  let started = null;
+
+  function spawnBranches() {
+    validZones.forEach(({ name, zone }, idx) => {
+      const target = polygonCenter(zone.polygon);
+      if (!target) return;
+
+      const branchTrail = L.polyline([avgTarget], {
+        color: trailColor,
+        weight: 2.5,
+        opacity: 0.42,
+        dashArray: '6,6'
+      }).addTo(liveCountryLayer);
+
+      const branchGlow = L.polyline([avgTarget], {
+        color: trailColor,
+        weight: 7,
+        opacity: 0.05,
+        lineCap: 'round'
+      }).addTo(liveCountryLayer);
+
+      const branchRocket = L.circleMarker(avgTarget, {
+        radius: 4,
+        color: rocketStroke,
+        weight: 2,
+        fillColor: rocketFill,
+        fillOpacity: 1,
+      }).addTo(liveCountryLayer);
+
+      activeAnimations.push(branchTrail, branchGlow, branchRocket);
+
+      const branchDuration = 1200 + idx * 120;
+      let bStarted = null;
+
+      function branchStep(ts) {
+        if (!bStarted) bStarted = ts;
+        const progress = Math.min((ts - bStarted) / branchDuration, 1);
+        const lat = avgTarget[0] + (target[0] - avgTarget[0]) * progress;
+        const lon = avgTarget[1] + (target[1] - avgTarget[1]) * progress;
+        const pos = [lat, lon];
+        branchRocket.setLatLng(pos);
+        branchTrail.addLatLng(pos);
+        branchGlow.addLatLng(pos);
+
+        if (progress < 1) {
+          requestAnimationFrame(branchStep);
+          return;
+        }
+
+        const blast = L.circle(target, {
+          radius: 900,
+          color: rocketStroke,
+          weight: 2,
+          fillColor: rocketFill,
+          fillOpacity: 0.14,
+        }).addTo(liveCountryLayer);
+        activeAnimations.push(blast);
+
+        setTimeout(() => {
+          fadeAndRemoveLayer(branchRocket, 600, 0);
+          fadeAndRemoveLayer(branchTrail, 1800, 0);
+          fadeAndRemoveLayer(branchGlow, 2200, 0);
+          fadeAndRemoveLayer(blast, 1400, 0);
+        }, 250);
+      }
+
+      setTimeout(() => requestAnimationFrame(branchStep), idx * 140);
+      addLivePolygon(name, label, 0, false);
+    });
+  }
+
+  function step(ts) {
+    if (!started) started = ts;
+    const progress = Math.min((ts - started) / mainDuration, 1);
+    const lat = source[0] + (avgTarget[0] - source[0]) * progress;
+    const lon = source[1] + (avgTarget[1] - source[1]) * progress;
+    const pos = [lat, lon];
+    rocket.setLatLng(pos);
+    mainTrail.addLatLng(pos);
+    mainGlow.addLatLng(pos);
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    const splitBlast = L.circle(avgTarget, {
+      radius: 1400,
+      color: rocketStroke,
+      weight: 2,
+      fillColor: rocketFill,
+      fillOpacity: 0.18,
+    }).addTo(liveCountryLayer);
+    activeAnimations.push(splitBlast);
+
+    spawnBranches();
+
+    setTimeout(() => {
+      fadeAndRemoveLayer(rocket, 700, 0);
+      fadeAndRemoveLayer(mainTrail, 2200, 0);
+      fadeAndRemoveLayer(mainGlow, 2600, 0);
+      fadeAndRemoveLayer(splitBlast, 1600, 0);
+    }, 250);
+  }
+
+  requestAnimationFrame(step);
+}
+
 function handleLiveCountryEvent(payload) {
   if (!payload?.cities?.length) return;
   const label = payload.datetime || 'אירוע חדש';
 
-  payload.cities.forEach((city, idx) => {
-    const delayMs = idx * 350;
-    const hasPolygon = addLivePolygon(city, label, delayMs);
+  const enriched = payload.cities.map(city => {
+    const zone = zoneIndex[city] || null;
+    const origin = zone ? detectEstimatedOrigin(city, zone) : 'unknown';
+    return { city, zone, origin };
+  });
+
+  const iranZones = enriched.filter(x => x.zone && x.origin === 'iran').map(x => x.city);
+  const lebanonZones = enriched.filter(x => x.zone && x.origin === 'lebanon').map(x => x.city);
+  const gazaZones = enriched.filter(x => x.zone && x.origin === 'gaza').map(x => x.city);
+  const otherZones = enriched.filter(x => !x.zone || x.origin === 'unknown').map(x => x.city);
+
+  if (iranZones.length >= 3) {
+    animateMultiImpactFromSource('iran', iranZones, label);
+  } else {
+    iranZones.forEach((city, idx) => addLivePolygon(city, label, idx * 350));
+  }
+
+  if (lebanonZones.length >= 3) {
+    animateMultiImpactFromSource('lebanon', lebanonZones, label);
+  } else {
+    lebanonZones.forEach((city, idx) => addLivePolygon(city, label, idx * 280));
+  }
+
+  if (gazaZones.length >= 3) {
+    animateMultiImpactFromSource('gaza', gazaZones, label);
+  } else {
+    gazaZones.forEach((city, idx) => addLivePolygon(city, label, idx * 280));
+  }
+
+  otherZones.forEach(city => {
+    const hasPolygon = addLivePolygon(city, label, 0);
     if (!hasPolygon) {
       const centroid = zoneCentroids[city] || fallbackCityCoords[city];
-      if (centroid) {
-        addLiveMarker(centroid[0], centroid[1], label, city);
-      }
+      if (centroid) addLiveMarker(centroid[0], centroid[1], label, city);
     }
   });
 
@@ -1268,7 +1464,10 @@ def api_city_stats():
 def api_stream() -> Response:
     @stream_with_context
     def generate():
-        last_seen = 0
+        store.ensure_loaded()
+        # מתחילים מהאירוע האחרון הקיים כדי לא לנגן את כל ההיסטוריה מחדש
+        last_seen = store.events[-1].ts if store.events else 0
+
         while True:
             store.ensure_loaded()
             latest_ts = store.events[-1].ts if store.events else 0
@@ -1283,14 +1482,14 @@ def api_stream() -> Response:
                         "cities": event.cities,
                         "datetime": datetime.fromtimestamp(event.ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S"),
                     }
-                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}"
                     last_seen = event.ts
             else:
                 heartbeat = {
                     "type": "heartbeat",
                     "server_time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 }
-                yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(heartbeat, ensure_ascii=False)}"
 
             time.sleep(STREAM_POLL_SECONDS)
 
