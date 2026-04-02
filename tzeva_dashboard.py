@@ -922,11 +922,11 @@ function renderHourlyChart(items) {
 
 async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
-  setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'}`);
+  setText('datasetMeta', `רשומות: ${fmtNum(datasetMeta.total_events)} · ערים/אזורים: ${fmtNum(datasetMeta.total_cities)} · אזורים עם פוליגון: ${fmtNum(datasetMeta.total_zones || 0)} · עדכון אחרון: ${datasetMeta.refreshed_at || '—'} · טווח: ${datasetMeta.min_date || '—'} ← ${datasetMeta.max_date || '—'}`);
 
-  const today = todayLocalISO();
-  if (!document.getElementById('toDate').value) document.getElementById('toDate').value = today;
-  if (!document.getElementById('fromDate').value) document.getElementById('fromDate').value = shiftDays(today, -29);
+  const maxDate = datasetMeta?.max_date || todayLocalISO();
+  if (!document.getElementById('toDate').value) document.getElementById('toDate').value = maxDate;
+  if (!document.getElementById('fromDate').value) document.getElementById('fromDate').value = shiftDays(maxDate, -29);
 }
 
 async function loadCities() {
@@ -943,15 +943,15 @@ async function loadCities() {
 
 function applyPreset() {
   const preset = document.getElementById('preset').value;
-  const today = todayLocalISO();
+  const maxDate = datasetMeta?.max_date || todayLocalISO();
   if (preset === 'all') {
-    document.getElementById('fromDate').value = datasetMeta?.min_date || today;
-    document.getElementById('toDate').value = today;
+    document.getElementById('fromDate').value = datasetMeta?.min_date || maxDate;
+    document.getElementById('toDate').value = maxDate;
     return;
   }
   const days = parseInt(preset, 10);
-  document.getElementById('toDate').value = today;
-  document.getElementById('fromDate').value = shiftDays(today, -(days - 1));
+  document.getElementById('toDate').value = maxDate;
+  document.getElementById('fromDate').value = shiftDays(maxDate, -(days - 1));
 }
 
 function renderSummary(data) {
@@ -1504,13 +1504,13 @@ def api_city_stats():
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
 
-    today_real = datetime.now(TZ).strftime("%Y-%m-%d")
-    last_7_start = (datetime.strptime(today_real, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
-    last_30_start = (datetime.strptime(today_real, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
+    today_date = store.max_date
+    last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
+    last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
 
-    today_val = daily_counter.get(today_real, 0)
-    week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_real)
-    month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_real)
+    today_val = daily_counter.get(today_date, 0)
+    week_val = sum(v for k, v in daily_counter.items() if last_7_start <= k <= today_date)
+    month_val = sum(v for k, v in daily_counter.items() if last_30_start <= k <= today_date)
 
     hourly_distribution = []
     for h in range(24):
@@ -1557,7 +1557,7 @@ def api_city_stats():
         "recent_events": recent_events,
         "summary": {
             "today": today_val,
-            "today_date": today_real,
+            "today_date": today_date,
             "last_7_days": week_val,
             "last_30_days": month_val,
             "total_in_range": total_in_range,
