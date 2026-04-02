@@ -173,6 +173,12 @@ HTML = r'''<!doctype html>
       .controls, .stats { grid-template-columns:1fr; }
       #map { height:420px; }
     }
+    /* Добавляем анимацию пульсации для метки дрона */
+    @keyframes dronePulse {
+      0% { transform: scale(0.9); opacity: 0.7; }
+      50% { transform: scale(1.3); opacity: 0.3; }
+      100% { transform: scale(0.9); opacity: 0.7; }
+    }
   </style>
 </head>
 <body>
@@ -449,10 +455,21 @@ function animationDurationByOrigin(origin) {
   if (origin === 'iran') return 270000; // 4.5 минуты (270 сек)
   if (origin === 'lebanon') return 30000; // 30 секунд
   if (origin === 'gaza') return 45000; // 45 секунд
-  return 30000; // По умолчанию 30 сек
+  return 30000; 
 }
 
-function originStyle(origin) {
+function originStyle(origin, isDrone = false) {
+  if (isDrone) {
+    return {
+      rocketStroke: '#f59e0b',
+      rocketFill: '#fbbf24',
+      trail: '#fcd34d',
+      blastStroke: '#f59e0b',
+      blastFill: '#d97706',
+      label: 'כלי טיס עוין (UAV)'
+    };
+  }
+
   if (origin === 'iran') {
     return {
       rocketStroke: '#c084fc',
@@ -494,34 +511,44 @@ function originStyle(origin) {
 }
 
 
-function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
+function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
   if (!map || !zone?.polygon?.length) return;
 
   const target = polygonCenter(zone.polygon);
   if (!target) return;
 
+  const isDrone = category === 2;
   const origin = detectEstimatedOrigin(zoneName, zone);
-  const style = originStyle(origin);
+  const style = originStyle(origin, isDrone);
 
   let start = null;
-  if (origin === 'iran') {
-    start = [32.1, 39.5];
-  } else if (origin === 'lebanon') {
-    start = [33.45, 35.35];
-  } else if (origin === 'gaza') {
-    start = [31.5, 34.45];
-  } else {
-    start = [target[0], target[1] + 1.8];
-  }
+  let duration = 0;
 
-  // Используем новую функцию длительности полета
-  const duration = animationDurationByOrigin(origin);
+  if (isDrone) {
+    // Для дрона стартовая точка где-то рядом на карте (случайное расстояние и угол)
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 0.3 + Math.random() * 0.3; // Примерно 30-50км от цели
+    start = [target[0] + Math.sin(angle) * dist, target[1] + Math.cos(angle) * dist];
+    duration = 45000; // 45 секунд
+  } else {
+    // Обычная логика ракет
+    if (origin === 'iran') {
+      start = [32.1, 39.5];
+    } else if (origin === 'lebanon') {
+      start = [33.45, 35.35];
+    } else if (origin === 'gaza') {
+      start = [31.5, 34.45];
+    } else {
+      start = [target[0], target[1] + 1.8];
+    }
+    duration = animationDurationByOrigin(origin);
+  }
 
   const trail = L.polyline([start], {
     color: style.trail,
     weight: 3,
     opacity: 0.95,
-    dashArray: '8,8'
+    dashArray: isDrone ? '4,6' : '8,8'
   }).addTo(liveCountryLayer);
 
   const glowTrail = L.polyline([start], {
@@ -531,14 +558,26 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
     lineCap: 'round'
   }).addTo(liveCountryLayer);
 
-  const rocketIcon = L.divIcon({
-    className: 'rocket-icon-wrapper',
-    html: `
+  let iconHtml = '';
+  if (isDrone) {
+    iconHtml = `
+      <div style="position:relative; width:20px; height:20px; display:flex; align-items:center; justify-content:center;">
+        <div style="position:absolute; width:20px; height:20px; border-radius:50%; background:${style.rocketFill}; opacity:.4; filter:blur(4px); animation: dronePulse 1s infinite;"></div>
+        <div style="position:relative; width:12px; height:12px; border-radius:50%; background:${style.rocketFill}; border:2px solid ${style.rocketStroke}; box-shadow:0 0 8px ${style.rocketFill};"></div>
+      </div>
+    `;
+  } else {
+    iconHtml = `
       <div style="position:relative; width:22px; height:22px; display:flex; align-items:center; justify-content:center;">
         <div style="position:absolute; width:22px; height:22px; border-radius:50%; background:${style.rocketFill}; opacity:.18; filter:blur(6px);"></div>
         <div style="position:relative; width:10px; height:10px; transform:rotate(45deg); background:${style.rocketFill}; border:2px solid ${style.rocketStroke}; border-radius:2px 10px 2px 10px; box-shadow:0 0 10px ${style.rocketFill};"></div>
       </div>
-    `,
+    `;
+  }
+
+  const rocketIcon = L.divIcon({
+    className: 'rocket-icon-wrapper',
+    html: iconHtml,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
   });
@@ -549,22 +588,44 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0) {
 
   activeAnimations.push(trail, glowTrail, rocket);
 
+  const dx = target[1] - start[1];
+  const dy = target[0] - start[0];
+  const length = Math.sqrt(dx*dx + dy*dy);
+  const px = -dy / length;
+  const py = dx / length;
+
   let started = null;
   function step(ts) {
     if (!started) started = ts;
     const progress = Math.min((ts - started) / duration, 1);
-    const lat = start[0] + (target[0] - start[0]) * progress;
-    const lon = start[1] + (target[1] - start[1]) * progress;
+    
+    let lat, lon;
+
+    if (isDrone) {
+      // Имитация блуждающего полета
+      const baseLat = start[0] + (target[0] - start[0]) * progress;
+      const baseLon = start[1] + (target[1] - start[1]) * progress;
+      const amplitude = 0.08 * (1 - progress); 
+      const wave = Math.sin(progress * Math.PI * 8); 
+      lat = baseLat + py * amplitude * wave;
+      lon = baseLon + px * amplitude * wave;
+    } else {
+      lat = start[0] + (target[0] - start[0]) * progress;
+      lon = start[1] + (target[1] - start[1]) * progress;
+    }
+    
     const pos = [lat, lon];
     rocket.setLatLng(pos);
     trail.addLatLng(pos);
     glowTrail.addLatLng(pos);
     
-    const angle = Math.atan2(target[1] - pos[1], target[0] - pos[0]) * 180 / Math.PI;
-    const el = rocket.getElement();
-    if (el) {
-      const inner = el.querySelector('div > div:last-child');
-      if (inner) inner.style.transform = `rotate(${angle + 135}deg)`;
+    if (!isDrone) {
+      const angle = Math.atan2(target[1] - pos[1], target[0] - pos[0]) * 180 / Math.PI;
+      const el = rocket.getElement();
+      if (el) {
+        const inner = el.querySelector('div > div:last-child');
+        if (inner) inner.style.transform = `rotate(${angle + 135}deg)`;
+      }
     }
 
     if (progress < 1) {
@@ -686,16 +747,16 @@ function processNewFeedEvents(eventsArray) {
       if (createdLayer && targetCoords) {
         activeAlertsMap[city] = createdLayer;
         
-        animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0);
+        // ПЕРЕДАЕМ КАТЕГОРИЮ В АНИМАЦИЮ
+        animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0, category);
 
-        // Увеличили время удержания маркера, чтобы ракета успела долететь (особенно из Ирана)
         setTimeout(() => {
           if (activeAlertsMap[city] === createdLayer) {
             fadeAndRemoveLayer(createdLayer, 1800, 0);
             delete activeAlertsMap[city];
             updateMapCaption();
           }
-        }, 360000); // 6 минут (360 000 мс)
+        }, 360000); // 6 минут
       }
     }
   });
@@ -837,7 +898,7 @@ function renderSummary(data) {
 
 // ОЧИСТКА КАРТЫ ПРИ ЗАГРУЗКЕ НОВЫХ СТАТОВ
 async function loadDashboard() {
-  clearLiveLayers(); // Убираем анимации при смене фокуса
+  clearLiveLayers(); 
   let city = document.getElementById('citySelect').value.trim();
   const from = document.getElementById('fromDate').value;
   const to = document.getElementById('toDate').value;
@@ -855,7 +916,7 @@ async function loadDashboard() {
 }
 
 async function refreshBackend() {
-  clearLiveLayers(); // Очистка при рефреше
+  clearLiveLayers(); 
   setText('datasetMeta', 'מרענן נתונים...');
   await getJson('/api/refresh', { method: 'POST' });
   await loadMeta();
