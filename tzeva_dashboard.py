@@ -165,7 +165,7 @@ HTML = r'''<!doctype html>
     .pill { padding:7px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); }
     .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-left:6px; }
     .dot.red { background:#ff5c5c; }
-    .dot.yellow { background:#ffd166; }
+    .dot.yellow { background:#f97316; } /* Изменил желтый на оранжевый в легенде для дронов */
     .dot.purple { background:#b56cff; }
     .dot.green { background:#3ddc97; }
     @media (max-width:1150px) {
@@ -173,7 +173,7 @@ HTML = r'''<!doctype html>
       .controls, .stats { grid-template-columns:1fr; }
       #map { height:420px; }
     }
-    /* Добавляем анимацию пульсации для метки дрона */
+    /* Анимация пульсации для метки дрона */
     @keyframes dronePulse {
       0% { transform: scale(0.9); opacity: 0.7; }
       50% { transform: scale(1.3); opacity: 0.3; }
@@ -234,7 +234,7 @@ HTML = r'''<!doctype html>
           <div id="map"></div>
           <div class="legend">
             <div class="pill"><span class="dot red"></span>ירי טילים (קטגוריה 1)</div>
-            <div class="pill"><span class="dot yellow"></span>כלי טיס (קטגוריה 2)</div>
+            <div class="pill"><span class="dot yellow"></span>כלי טיס עוין (קטגוריה 2)</div>
             <div class="pill"><span class="dot green"></span>שידור חי מחובר</div>
           </div>
         </div>
@@ -296,6 +296,9 @@ let activeAnimations = [];
 let zoneIndex = {};
 let zoneCentroids = {};
 let hasFittedMap = false;
+
+// Флаг для пропуска анимаций старых сирен при загрузке/рефреше
+let isInitialStreamLoad = true;
 
 const fallbackCityCoords = {
   "אשקלון": [31.6688, 34.5743],
@@ -455,17 +458,18 @@ function animationDurationByOrigin(origin) {
   if (origin === 'iran') return 270000; // 4.5 минуты (270 сек)
   if (origin === 'lebanon') return 30000; // 30 секунд
   if (origin === 'gaza') return 45000; // 45 секунд
-  return 30000; 
+  return 30000; // По умолчанию 30 сек
 }
 
 function originStyle(origin, isDrone = false) {
+  // ОРАНЖЕВЫЙ ЦВЕТ ДЛЯ ДРОНОВ
   if (isDrone) {
     return {
-      rocketStroke: '#f59e0b',
-      rocketFill: '#fbbf24',
-      trail: '#fcd34d',
-      blastStroke: '#f59e0b',
-      blastFill: '#d97706',
+      rocketStroke: '#ea580c', // Orange-600
+      rocketFill: '#f97316',   // Orange-500
+      trail: '#fdba74',        // Orange-300
+      blastStroke: '#ea580c',
+      blastFill: '#c2410c',    // Orange-700
       label: 'כלי טיס עוין (UAV)'
     };
   }
@@ -602,7 +606,7 @@ function animateFlightToPolygon(zoneName, zone, delayMs = 0, category = 1) {
     let lat, lon;
 
     if (isDrone) {
-      // Имитация блуждающего полета
+      // Имитация блуждающего полета для дрона
       const baseLat = start[0] + (target[0] - start[0]) * progress;
       const baseLon = start[1] + (target[1] - start[1]) * progress;
       const amplitude = 0.08 * (1 - progress); 
@@ -667,10 +671,11 @@ function pulsePolygonCustom(layer, category) {
     
     on = !on;
     try {
+      // Оранжевая пульсация для дрона, красная для ракет
       layer.setStyle({
-        color: on ? (isDrone ? '#ffd166' : '#ffd166') : (isDrone ? '#f59e0b' : '#ff4d4d'),
+        color: on ? (isDrone ? '#f97316' : '#ff4d4d') : (isDrone ? '#ea580c' : '#dc2626'),
         weight: on ? 3 : 2,
-        fillColor: on ? (isDrone ? '#ffb703' : '#ff7d7d') : (isDrone ? '#f59e0b' : '#ff4d4d'),
+        fillColor: on ? (isDrone ? '#fb923c' : '#ff7d7d') : (isDrone ? '#f97316' : '#ff4d4d'),
         fillOpacity: on ? 0.35 : 0.15,
       });
     } catch (e) {}
@@ -678,7 +683,7 @@ function pulsePolygonCustom(layer, category) {
 }
 
 
-function processNewFeedEvents(eventsArray) {
+function processNewFeedEvents(eventsArray, skipAnimations = false) {
   eventsArray.sort((a, b) => new Date(a.alertDate) - new Date(b.alertDate));
 
   eventsArray.forEach(ev => {
@@ -708,7 +713,7 @@ function processNewFeedEvents(eventsArray) {
       if (zone && zone.polygon && zone.polygon.length > 0) {
         targetCoords = polygonCenter(zone.polygon);
         const isDrone = category === 2;
-        const baseColor = isDrone ? '#f59e0b' : '#ff4d4d';
+        const baseColor = isDrone ? '#f97316' : '#ff4d4d'; // Оранжевый или красный
 
         const polygon = L.polygon(zone.polygon, {
           color: baseColor,
@@ -730,7 +735,7 @@ function processNewFeedEvents(eventsArray) {
         
         if (targetCoords) {
           const isDrone = category === 2;
-          const mColor = isDrone ? '#f59e0b' : '#ff2d55';
+          const mColor = isDrone ? '#f97316' : '#ff2d55'; // Оранжевый или красный
           const marker = L.circleMarker(targetCoords, {
             radius: 8,
             color: mColor,
@@ -747,16 +752,19 @@ function processNewFeedEvents(eventsArray) {
       if (createdLayer && targetCoords) {
         activeAlertsMap[city] = createdLayer;
         
-        // ПЕРЕДАЕМ КАТЕГОРИЮ В АНИМАЦИЮ
-        animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0, category);
+        // ЕСЛИ ЭТО НЕ ПЕРВАЯ ЗАГРУЗКА (РЕФРЕШ), ТО РИСУЕМ ПОЛЕТ
+        if (!skipAnimations) {
+            animateFlightToPolygon(city, { polygon: [targetCoords, targetCoords], countdown: zone?.countdown || 15 }, 0, category);
+        }
 
+        // Увеличили время удержания маркера, чтобы ракета успела долететь (особенно из Ирана)
         setTimeout(() => {
           if (activeAlertsMap[city] === createdLayer) {
             fadeAndRemoveLayer(createdLayer, 1800, 0);
             delete activeAlertsMap[city];
             updateMapCaption();
           }
-        }, 360000); // 6 минут
+        }, 360000); // 6 минут (360 000 мс)
       }
     }
   });
@@ -917,6 +925,7 @@ async function loadDashboard() {
 
 async function refreshBackend() {
   clearLiveLayers(); 
+  isInitialStreamLoad = true; // Сбрасываем флаг при принудительном рефреше
   setText('datasetMeta', 'מרענן נתונים...');
   await getJson('/api/refresh', { method: 'POST' });
   await loadMeta();
@@ -949,7 +958,10 @@ function connectLiveStream() {
       }
 
       if (Array.isArray(payload)) {
-        processNewFeedEvents(payload);
+        // Передаем флаг пропуска анимаций (true при первой загрузке)
+        processNewFeedEvents(payload, isInitialStreamLoad);
+        isInitialStreamLoad = false; // После первой загрузки снимаем флаг
+        
         const activeAlerts = payload.filter(p => p.category === 1 || p.category === 2);
         if (activeAlerts.length > 0) {
             const latest = activeAlerts[activeAlerts.length - 1];
