@@ -17,7 +17,7 @@ app = Flask(__name__)
 TZ = ZoneInfo("Asia/Jerusalem")
 
 DATA_URL = "https://www.tzevaadom.co.il/static/historical/all.json"
-SNAPSHOT_URL = "https://iwm.diskin.net/api/snapshot"
+OREF_ALERTS_HISTORY_URL = "https://www.oref.org.il/warningMessages/alert/AlertsHistory.json"
 LOCAL_ZONE_SOURCE = Path("alert-zones-local.json")
 
 CACHE_DIR = Path("cache")
@@ -28,6 +28,7 @@ META_FILE = CACHE_DIR / "meta.json"
 REFRESH_SECONDS = 600
 STREAM_POLL_SECONDS = 1
 LIVE_REFRESH_SECONDS = 2
+LIVE_MAX_ITEMS = 120
 DEFAULT_THREAT_TYPES = {0}
 ZONE_NAME_ALIASES = {
     "תל אביב מרכז העיר": "תל אביב - מרכז העיר",
@@ -180,7 +181,7 @@ HTML = r'''<!doctype html>
     <div class="card" style="margin-bottom:20px;">
       <div class="title">🚨 Iron Monitor Live</div>
       <div class="sub">
-        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב מוצג בנפרד.
+        מפת לייב ארצית נפרדת מהחיפוש. החיפוש משפיע רק על הסטטיסטיקה. פוליגונים מופיעים רק באירועי לייב. אין ציור התחלתי של כל האזורים. הסטטיסטיקה מחושבת לפי בסיס הנתונים ההיסטורי בלבד, והלייב נמשך מפיד ההתרעות של פיקוד העורף, כולל הודעות סיום אירוע.
       </div>
       <div class="small" id="datasetMeta" style="margin-top:10px;">טוען נתונים...</div>
       <div class="small" id="liveStatus" style="margin-top:6px;">מתחבר לשידור חי...</div>
@@ -923,8 +924,7 @@ async function loadMeta() {
   datasetMeta = await getJson('/api/meta');
 
   const minDate = datasetMeta?.min_date || '—';
-  const dbMaxDate = datasetMeta?.max_date || '—'; 
-  const actualToday = todayLocalISO(); 
+  const dbMaxDate = datasetMeta?.max_date || todayLocalISO();
   const refreshed = datasetMeta?.refreshed_at || '—';
 
   setText(
@@ -933,10 +933,10 @@ async function loadMeta() {
   );
 
   if (!document.getElementById('toDate').value) {
-    document.getElementById('toDate').value = actualToday;
+    document.getElementById('toDate').value = dbMaxDate;
   }
   if (!document.getElementById('fromDate').value) {
-    document.getElementById('fromDate').value = shiftDays(actualToday, -29);
+    document.getElementById('fromDate').value = shiftDays(dbMaxDate, -29);
   }
 }
 
@@ -954,16 +954,16 @@ async function loadCities() {
 
 function applyPreset() {
   const preset = document.getElementById('preset').value;
-  const actualToday = todayLocalISO();
-  
+  const maxDate = datasetMeta?.max_date || todayLocalISO();
+
   if (preset === 'all') {
-    document.getElementById('fromDate').value = datasetMeta?.min_date || actualToday;
-    document.getElementById('toDate').value = actualToday;
+    document.getElementById('fromDate').value = datasetMeta?.min_date || maxDate;
+    document.getElementById('toDate').value = maxDate;
     return;
   }
   const days = parseInt(preset, 10);
-  document.getElementById('toDate').value = actualToday;
-  document.getElementById('fromDate').value = shiftDays(actualToday, -(days - 1));
+  document.getElementById('toDate').value = maxDate;
+  document.getElementById('fromDate').value = shiftDays(maxDate, -(days - 1));
 }
 
 function renderSummary(data) {
@@ -1059,7 +1059,7 @@ function connectLiveStream() {
       }
 
       if (payload.type === 'all_clear') {
-        setText('liveStatus', `🟢 חזרה לשגרה · ${payload.datetime}`);
+        setText('liveStatus', `🟢 חזרה לשגרה: ${payload.cities?.join(', ') || '—'} · ${payload.datetime}`);
         return;
       }
 
@@ -1208,10 +1208,12 @@ class DataStore:
             return
 
         req = Request(
-            SNAPSHOT_URL,
+            OREF_ALERTS_HISTORY_URL,
             headers={
                 "User-Agent": "Mozilla/5.0",
                 "Accept": "application/json, text/plain, */*",
+                "Referer": "https://www.oref.org.il/heb",
+                "X-Requested-With": "XMLHttpRequest",
             },
         )
 
@@ -1224,73 +1226,49 @@ class DataStore:
                 return
 
             data = json.loads(raw)
-            alerts = self._extract_live_alerts_from_snapshot(data)
-            self.live_alerts = alerts
+            self.live_alerts = self._extract_live_alerts_from_oref_history(data)[-LIVE_MAX_ITEMS:]
             self.last_live_refresh = now
         except Exception as e:
-            print("snapshot refresh error:", e)
+            print("oref live refresh error:", e)
             self.last_live_refresh = now
 
-    def _extract_live_alerts_from_snapshot(self, data: Any) -> list[dict[str, Any]]:
+    def _extract_live_alerts_from_oref_history(self, data: Any) -> list[dict[str, Any]]:
+        if not isinstance(data, list):
+            return []
+
         results: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
 
-        def walk(node: Any) -> None:
-            if isinstance(node, dict):
-                props = node.get("properties")
-                if isinstance(props, dict):
-                    source = props.get("source")
-                    alert_state = props.get("alertState")
-                    external_id = props.get("externalId")
-                    city_he = props.get("cityHebrew")
-                    alert_type = props.get("alertType")
-                    severity = props.get("severity")
-                    is_official = props.get("isOfficial", False)
+            title = str(item.get("title") or "").strip()
+            city_name = self._normalize_zone_name(str(item.get("data") or "").strip())
+            alert_date = str(item.get("alertDate") or "").strip()
+            category = item.get("category")
 
-                    if (
-                        source == "pikud_haoref_telegram"
-                        and alert_state == "active"
-                        and is_official
-                        and external_id
-                        and city_he
-                    ):
-                        target_areas = []
-                        missile_track = props.get("missileTrack")
-                        if isinstance(missile_track, dict):
-                            ta = missile_track.get("targetAreas")
-                            if isinstance(ta, list):
-                                target_areas = [str(x) for x in ta if str(x).strip()]
+            if not city_name or not alert_date or category is None:
+                continue
 
-                        created_at = (
-                            props.get("createdAt")
-                            or props.get("updatedAt")
-                            or props.get("publishedAt")
-                            or props.get("detectedAt")
-                        )
+            if category == 13 or title == "האירוע הסתיים":
+                event_type = "all_clear"
+            elif category in (1, 2, 4):
+                event_type = "alert"
+            else:
+                continue
 
-                        city_name = str(city_he).strip()
-                        results.append({
-                            "external_id": str(external_id),
-                            "city": city_name,
-                            "cities": [city_name],
-                            "alert_type": alert_type,
-                            "severity": severity,
-                            "source": source,
-                            "target_areas": target_areas,
-                            "created_at": created_at,
-                        })
+            results.append({
+                "external_id": f"{alert_date}|{city_name}|{category}",
+                "city": city_name,
+                "cities": [city_name],
+                "alert_type": title,
+                "category": category,
+                "source": "oref_history_live",
+                "created_at": alert_date,
+                "event_type": event_type,
+            })
 
-                for value in node.values():
-                    walk(value)
-            elif isinstance(node, list):
-                for item in node:
-                    walk(item)
-
-        walk(data)
-
-        dedup: dict[str, dict[str, Any]] = {}
-        for item in results:
-            dedup[item["external_id"]] = item
-        return list(dedup.values())
+        results.sort(key=lambda x: (x["created_at"], x["city"]))
+        return results
 
     def _build_indexes(self, raw: Any) -> None:
         events: list[EventRecord] = []
@@ -1496,7 +1474,7 @@ def api_city_stats():
         return jsonify({"error": f"city not found: {city}"}), 404
 
     start = request.args.get("from") or store.min_date
-    end = request.args.get("to") or datetime.now(TZ).strftime("%Y-%m-%d")
+    end = request.args.get("to") or store.max_date
     if not start or not end:
         return jsonify({"error": "date range unavailable"}), 400
     if start > end:
@@ -1509,8 +1487,7 @@ def api_city_stats():
     daily_rows = [{"date": d, "count": daily_counter.get(d, 0)} for d in daterange_days(start, end)]
     total_in_range = sum(row["count"] for row in daily_rows)
 
-    # Используем РЕАЛЬНОЕ сегодня, а не максимальную дату из БД
-    today_date = datetime.now(TZ).strftime("%Y-%m-%d")
+    today_date = store.max_date
     last_7_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
     last_30_start = (datetime.strptime(today_date, "%Y-%m-%d") - timedelta(days=29)).strftime("%Y-%m-%d")
 
@@ -1598,27 +1575,17 @@ def api_stream() -> Response:
                 dt_text = created_at if created_at else datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
                 payload = {
-                    "type": "alert",
+                    "type": item.get("event_type", "alert"),
                     "ts": int(time.time()),
                     "cities": item["cities"],
                     "datetime": dt_text,
                     "external_id": external_id,
                     "alert_type": item.get("alert_type"),
-                    "severity": item.get("severity"),
+                    "category": item.get("category"),
                     "source": item.get("source"),
-                    "target_areas": item.get("target_areas", []),
                 }
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}"
                 sent_ids.add(external_id)
-
-            removed_ids = sent_ids - current_ids
-            for removed_id in removed_ids:
-                payload = {
-                    "type": "all_clear",
-                    "external_id": removed_id,
-                    "datetime": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
             sent_ids = current_ids.copy()
 
